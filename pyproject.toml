@@ -1,0 +1,14 @@
+[project]
+name = "small-llm"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "langchain-deepseek>=0.1.4",
+    "langchain-openai>=0.3.31",
+    "langgraph>=0.6.6",
+    "pyside6>=6.9.2",
+    "pywebview>=6.0",
+    "pywin32>=311",
+]
