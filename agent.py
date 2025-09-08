@@ -19,12 +19,11 @@ from langgraph.prebuilt.chat_agent_executor import AgentState
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
 import operator
 import asyncio
 from dataclasses import dataclass
 import random
-import win32api
-import win32con
 import datetime
 import time
 import math
@@ -32,16 +31,18 @@ import math
 LANGUAGE = "zh-CN"
 
 with (
+    open(f"prompts/{LANGUAGE}/decide_model.md", encoding="utf-8") as decide_file,
     open(f"prompts/{LANGUAGE}/instruction.md", encoding="utf-8") as instruction_file,
     open(f"prompts/{LANGUAGE}/messages.json", encoding="utf-8") as messages_file,
 ):
     TRANSLATED_TEXTS = {
+        "decide": decide_file.read(),
         "prompt": instruction_file.read(),
         "messages": json.load(messages_file),
     }
 
 
-class ChatQwen(ChatOpenAI):
+class ChatCustom(ChatOpenAI):
     def _convert_chunk_to_generation_chunk(
         self, chunk, default_chunk_class, base_generation_info
     ):
@@ -55,6 +56,15 @@ class ChatQwen(ChatOpenAI):
                 if rc := delta.get("reasoning_content"):
                     gc.message.additional_kwargs["reasoning_content"] = rc
         return gc
+
+    def _get_request_payload(self, input_, *, stop = None, **kwargs):
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        messages = self._convert_input(input_).to_messages()
+        if messages:
+            last_msg = messages[-1]
+            if isinstance(last_msg, AIMessage) and last_msg.additional_kwargs.get("partial", False):
+                payload["messages"][-1]["partial"] = True
+        return payload
 
 
 class PetState(TypedDict):
@@ -127,6 +137,7 @@ class State(TypedDict):
     presistent_messages: Annotated[list[BaseMessage], operator.add]
     input_messages: Annotated[list[BaseMessage], clearable_add]
     new_messages: Annotated[list[BaseMessage], clearable_add]
+    decide_result: dict
     pet: PetState
 
 
@@ -276,7 +287,7 @@ class DigestTask(Task):
 
 class UserInputEvent(Event):
     tags = ["user"]
-    msg_prefix = None
+    msg_prefix = "User Input"
 
     def __init__(self, content: str):
         super().__init__()
@@ -313,20 +324,29 @@ class Agent:
         self.screen_size = screen_size
 
         self.task_manager = TaskManager(self)
-        # self.model = ChatQwen(
-        #     base_url="https://api.moonshot.cn/v1",
-        #     api_key=open("test_moonshot_key.txt").read(),
-        #     model="kimi-k2-turbo-preview",
-        #     temperature=0.6,
-        #     frequency_penalty=1.0,
-        # ).bind_tools(tools)
-        self.model = ChatQwen(
-            base_url="http://127.0.0.1:8900/v1",
-            api_key="empty",
-            model="Qwen3",
+
+        self.decide_model_prompt = SystemMessage(TRANSLATED_TEXTS["decide"])
+        self.decide_model = ChatCustom(
+            base_url="https://api.moonshot.cn/v1",
+            api_key=open("test_moonshot_key.txt").read(),
+            model="kimi-k2-turbo-preview",
             temperature=0.6,
             frequency_penalty=1.0,
         ).bind_tools(tools)
+        self.model = ChatCustom(
+            base_url="https://api.moonshot.cn/v1",
+            api_key=open("test_moonshot_key.txt").read(),
+            model="kimi-k2-turbo-preview",
+            temperature=0.6,
+            frequency_penalty=1.0,
+        ).bind_tools(tools)
+        # self.model = ChatQwen(
+        #     base_url="http://127.0.0.1:8900/v1",
+        #     api_key="empty",
+        #     model="Qwen3",
+        #     temperature=0.6,
+        #     frequency_penalty=1.0,
+        # ).bind_tools(tools)
         # self.model = ChatDeepSeek(
         #     api_base="http://127.0.0.1:8900/v1",
         #     api_key="EMPTY",
@@ -363,35 +383,57 @@ class Agent:
             aggregate_task_info += "None"
         raw_messages.append(aggregate_task_info)
 
-        return {"input_messages": [HumanMessage(msg) for msg in raw_messages]}
+        return {
+            "input_messages": [HumanMessage("\n\n".join(raw_messages))],
+        }
 
-    async def call_model(self, state: State):
+    async def decide(self, state: State):
+        PREFIX = '{"content":"'
+
         input_msgs = (
-            [self.prompt_msg]
+            [self.decide_model_prompt]
             + state["presistent_messages"]
             + state["input_messages"]
             + state["new_messages"]
             + [
                 AIMessage(
-                    TRANSLATED_TEXTS["messages"]["thinking_prefill"],
-                    # partial=True,
+                    PREFIX,
+                    additional_kwargs={"partial": True},
                 )
             ]
         )
 
         msg = await self.model.ainvoke(input_msgs, seed=time.time_ns())
-        return {"new_messages": [msg]}
 
-    async def should_continue(self, state: State):
-        last_msg = state["new_messages"][-1]
-        if isinstance(last_msg, AIMessage) and last_msg.tool_calls:
-            return "tools"
-        return "postprocess"
+        return {"decide_result": json.loads(PREFIX + msg.content)}
+
+    async def process_text(self, state: State):
+        print(state["decide_result"]["content"])
+        return {"new_messages": [AIMessage(state["decide_result"]["content"])]}
+
+    async def tool_check(self, state: State):
+        if state["decide_result"]["tool"]:
+            return True
+        return False
+
+    async def tool_prepare(self, state: State):
+        return {
+            "new_messages": [
+                AIMessage(
+                    "",
+                    tool_calls=[
+                        {
+                            **state["decide_result"]["tool"],
+                            "id": f"tool_call_{datetime.datetime.now()}",
+                        }
+                    ],
+                )
+            ]
+        }
 
     async def tool_artifact_process(self, state: State):
-        assert isinstance(state["new_messages"][-1], ToolMessage)
-        msg = state["new_messages"][-1]
-        if msg.artifact is not None:
+        msg: ToolMessage = state["new_messages"][-1]
+        if msg.artifact:
             if isinstance(msg.artifact, Task):
                 if msg := await self.task_manager.add_task(msg.artifact):
                     return {"new_messages": [HumanMessage(f"[Event] {msg}")]}
@@ -399,9 +441,11 @@ class Agent:
 
     async def postprocess(self, state: State):
         new_presistent_messages = []
-        for msg in state["input_messages"]:
-            if isinstance(msg, HumanMessage) and not msg.content.startswith("[Info]"):
-                new_presistent_messages.append(msg)
+        for msg_item in state["input_messages"][0].content.split("\n\n"):
+            if msg_item.startswith("[User Input]"):
+                new_presistent_messages.append(HumanMessage(msg_item))
+            # if isinstance(msg, HumanMessage) and not msg.content.startswith("[Info]"):
+            #     new_presistent_messages.append(msg)
         for msg in state["new_messages"]:
             if isinstance(msg, (AIMessage, ToolMessage)):
                 new_presistent_messages.append(msg)
@@ -413,17 +457,28 @@ class Agent:
 
     def create_graph(self, tools: list[BaseTool]):
         builder = StateGraph(State)
+
         builder.add_node("preprocess", self.preprocess)
-        builder.add_node("model", self.call_model)
+        builder.add_node("decide", self.decide)
+        builder.add_node("text", self.process_text)
+        builder.add_node("tool_prepare", self.tool_prepare)
         builder.add_node("tools", ToolNode(tools, messages_key="new_messages"))
         builder.add_node("tool_artifact_process", self.tool_artifact_process)
         builder.add_node("postprocess", self.postprocess)
+
         builder.add_edge(START, "preprocess")
-        builder.add_edge("preprocess", "model")
-        builder.add_conditional_edges("model", self.should_continue)
+        builder.add_edge("preprocess", "decide")
+        builder.add_edge("decide", "text")
+        builder.add_conditional_edges(
+            "text",
+            self.tool_check,
+            {True: "tool_prepare", False: "postprocess"},
+        )
+        builder.add_edge("tool_prepare", "tools")
         builder.add_edge("tools", "tool_artifact_process")
-        builder.add_edge("tool_artifact_process", "model")
+        builder.add_edge("tool_artifact_process", "decide")
         builder.add_edge("postprocess", END)
+
         return builder.compile()
 
     def push_message(self, message: BaseMessage):
@@ -453,8 +508,8 @@ class Agent:
                                         print("</think>")
                                         thinking = False
                                     print(c, end="", flush=True)
-                            elif not isinstance(msg, HumanMessage):
-                                print(type(msg), msg)
+                            # elif not isinstance(msg, HumanMessage):
+                            #     print(type(msg), msg)
                         case "values":
                             final_state = data
                 print()
@@ -660,4 +715,3 @@ class RandomMoveEmitTask(Task):
     def on_event(self, event):
         if isinstance(event, MoveEvent):
             self.remained_time = random.randint(*self.interval)
-
