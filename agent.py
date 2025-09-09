@@ -1,4 +1,5 @@
 import json
+import threading
 from typing import Any, Literal, Never, Self, TypedDict, Annotated, ClassVar, Callable
 from collections.abc import AsyncGenerator, Coroutine
 from abc import ABC, abstractmethod
@@ -57,12 +58,14 @@ class ChatCustom(ChatOpenAI):
                     gc.message.additional_kwargs["reasoning_content"] = rc
         return gc
 
-    def _get_request_payload(self, input_, *, stop = None, **kwargs):
+    def _get_request_payload(self, input_, *, stop=None, **kwargs):
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
         messages = self._convert_input(input_).to_messages()
         if messages:
             last_msg = messages[-1]
-            if isinstance(last_msg, AIMessage) and last_msg.additional_kwargs.get("partial", False):
+            if isinstance(last_msg, AIMessage) and last_msg.additional_kwargs.get(
+                "partial", False
+            ):
                 payload["messages"][-1]["partial"] = True
         return payload
 
@@ -72,6 +75,7 @@ class PetState(TypedDict):
     health: int
     hunger: int
     position: tuple[int, int]
+    expression: str
 
 
 PET_STATE_RANGE = {
@@ -135,7 +139,8 @@ def clearable_add(a: list, b: list | None):
 
 class State(TypedDict):
     presistent_messages: Annotated[list[BaseMessage], operator.add]
-    input_messages: Annotated[list[BaseMessage], clearable_add]
+    input_messages: Annotated[list[HumanMessage], clearable_add]
+    info_message: HumanMessage
     new_messages: Annotated[list[BaseMessage], clearable_add]
     decide_result: dict
     pet: PetState
@@ -160,7 +165,7 @@ class Task(ABC):
 
     @abstractmethod
     async def execute(self, manager: "TaskManager", state: PetState) -> None:
-        return NotImplemented
+        raise NotImplementedError
 
     def execute_info(self) -> str | None:
         return None
@@ -205,7 +210,7 @@ class TaskManager:
                 merged_task,
                 asyncio.create_task(self.task_wrapper(merged_task)),
             )
-        return msg
+        self.trigger_event(NewTaskEvent(old_task, new_task, msg))
 
     def register_callback(self, key: str, cb: Callable[[Event], None]):
         assert key not in self.event_callbacks
@@ -233,6 +238,18 @@ class TaskManager:
         )
 
 
+class NewTaskEvent(Event):
+    def __init__(self, old_task: Task | None, new_task: Task, message: str | None):
+        super().__init__()
+
+        self.old_task = old_task
+        self.new_task = new_task
+        self.message = message
+
+    def trigger(self, state):
+        return self.message
+
+
 class ModifyPetStateEvent(Event):
 
     def __init__(self, name: str, delta: int):
@@ -244,7 +261,7 @@ class ModifyPetStateEvent(Event):
     def trigger(self, state):
         prev_desc = pet_state_desc(state, self.state_name)
         state[self.state_name] = pet_state_modify_check(
-            state[self.state_name] + self.delta
+            self.state_name, state[self.state_name] + self.delta
         )
         new_desc = pet_state_desc(state, self.state_name)
 
@@ -260,7 +277,9 @@ class ModifyPetStateEvent(Event):
         else:
             extra_text = ""
 
-        return base_text + extra_text
+        # return base_text + extra_text
+        if len(extra_text):
+            return extra_text
 
 
 class DigestTask(Task):
@@ -307,6 +326,19 @@ class StdinReadTask(Task):
             manager.trigger_event(UserInputEvent(user_input))
 
 
+class InvokeStartEvent(Event):
+    pass
+
+
+class InvokeEndEvent(Event):
+    pass
+
+class PetSpeakEvent(Event):
+    def __init__(self, content: str):
+        super().__init__()
+        
+        self.content = content
+
 class Agent:
 
     def __init__(self, tools: list[BaseTool], screen_size: tuple[int, int]):
@@ -326,13 +358,6 @@ class Agent:
         self.task_manager = TaskManager(self)
 
         self.decide_model_prompt = SystemMessage(TRANSLATED_TEXTS["decide"])
-        self.decide_model = ChatCustom(
-            base_url="https://api.moonshot.cn/v1",
-            api_key=open("test_moonshot_key.txt").read(),
-            model="kimi-k2-turbo-preview",
-            temperature=0.6,
-            frequency_penalty=1.0,
-        ).bind_tools(tools)
         self.model = ChatCustom(
             base_url="https://api.moonshot.cn/v1",
             api_key=open("test_moonshot_key.txt").read(),
@@ -340,51 +365,48 @@ class Agent:
             temperature=0.6,
             frequency_penalty=1.0,
         ).bind_tools(tools)
-        # self.model = ChatQwen(
-        #     base_url="http://127.0.0.1:8900/v1",
-        #     api_key="empty",
-        #     model="Qwen3",
-        #     temperature=0.6,
-        #     frequency_penalty=1.0,
-        # ).bind_tools(tools)
-        # self.model = ChatDeepSeek(
-        #     api_base="http://127.0.0.1:8900/v1",
-        #     api_key="EMPTY",
-        #     model="deepseek-chat",
-        #     reasoning_effort="minimal",
-        # )
+
         self.graph = self.create_graph(tools)
 
         self.prompt_msg = SystemMessage(TRANSLATED_TEXTS["prompt"])
 
         self.message_queue = asyncio.Queue()
 
+        self.running = False
+
     async def preprocess(self, state: State):
-        raw_messages = []
+        self.task_manager.trigger_event(InvokeStartEvent())
+
+        raw_messages: list[str] = ["Below are new messages"]
         while not self.message_queue.empty():
             raw_messages.append(self.message_queue.get_nowait())
+
+        return {
+            "input_messages": [HumanMessage(msg) for msg in raw_messages],
+        }
+
+    async def set_info(self, state: State):
+        info_parts: list[str] = []
 
         state_info = f"[Info] Current State:\n"
         for name in PET_STATE_DESC_MAPPER.keys():
             state_info += f"- **{name}**: {pet_state_desc(state['pet'], name)}\n"
-        raw_messages.append(state_info)
+        info_parts.append(state_info)
 
         environment_info = f"[Info] Environment:\n"
         environment_info += f"- Screen size: {self.screen_size}; Your position: {state["pet"]['position']}\n"
         environment_info += f"- Time: {datetime.datetime.now()}"
-        raw_messages.append(environment_info)
+        info_parts.append(environment_info)
 
         task_infos = self.task_manager.task_execute_infos()
-        aggregate_task_info = "[Info] Running Tasks:\n"
-        if len(task_infos):
-            for info_line in task_infos:
-                aggregate_task_info += f"- {info_line}\n"
-        else:
-            aggregate_task_info += "None"
-        raw_messages.append(aggregate_task_info)
+        if task_infos:
+            aggregate_task_info = "[Info] Running Tasks:\n"
+            for task_info_line in task_infos:
+                aggregate_task_info += f"- {task_info_line}\n"
+            info_parts.append(aggregate_task_info)
 
         return {
-            "input_messages": [HumanMessage("\n\n".join(raw_messages))],
+            "info_message": HumanMessage("\n\n".join(info_parts)),
         }
 
     async def decide(self, state: State):
@@ -396,10 +418,11 @@ class Agent:
             + state["input_messages"]
             + state["new_messages"]
             + [
+                state["info_message"],
                 AIMessage(
                     PREFIX,
                     additional_kwargs={"partial": True},
-                )
+                ),
             ]
         )
 
@@ -407,8 +430,23 @@ class Agent:
 
         return {"decide_result": json.loads(PREFIX + msg.content)}
 
-    async def process_text(self, state: State):
-        print(state["decide_result"]["content"])
+    async def response_fields_process(self, state: State):
+        if state["decide_result"]["mood_delta"] != 0:
+            self.task_manager.trigger_event(
+                ModifyPetStateEvent("mood", state["decide_result"]["mood_delta"])
+            )
+        if state["decide_result"]["expression"]:
+            self.task_manager.trigger_event(
+                ExpressionSetEvent(
+                    state["decide_result"]["expression"]["type"],
+                    state["decide_result"]["expression"]["duration"],
+                )
+            )
+
+        self.task_manager.trigger_event(
+            PetSpeakEvent(state["decide_result"]["content"])
+        )
+
         return {"new_messages": [AIMessage(state["decide_result"]["content"])]}
 
     async def tool_check(self, state: State):
@@ -424,7 +462,7 @@ class Agent:
                     tool_calls=[
                         {
                             **state["decide_result"]["tool"],
-                            "id": f"tool_call_{datetime.datetime.now()}",
+                            "id": f"{state["decide_result"]["tool"]["name"]}_{datetime.datetime.now()}",
                         }
                     ],
                 )
@@ -435,20 +473,23 @@ class Agent:
         msg: ToolMessage = state["new_messages"][-1]
         if msg.artifact:
             if isinstance(msg.artifact, Task):
-                if msg := await self.task_manager.add_task(msg.artifact):
-                    return {"new_messages": [HumanMessage(f"[Event] {msg}")]}
-        return {}
+                await self.task_manager.add_task(msg.artifact)
+            elif isinstance(msg.artifact, Event):
+                await self.task_manager.trigger_event(msg.artifact)
+            if not self.message_queue.empty():
+                return {"new_messages": [HumanMessage(self.message_queue.get_nowait())]}
 
     async def postprocess(self, state: State):
         new_presistent_messages = []
-        for msg_item in state["input_messages"][0].content.split("\n\n"):
-            if msg_item.startswith("[User Input]"):
-                new_presistent_messages.append(HumanMessage(msg_item))
-            # if isinstance(msg, HumanMessage) and not msg.content.startswith("[Info]"):
-            #     new_presistent_messages.append(msg)
+        for msg in state["input_messages"]:
+            if msg.content.startswith("[User Input]"):
+                new_presistent_messages.append(msg)
         for msg in state["new_messages"]:
             if isinstance(msg, (AIMessage, ToolMessage)):
                 new_presistent_messages.append(msg)
+
+        self.task_manager.trigger_event(InvokeEndEvent())
+
         return {
             "presistent_messages": new_presistent_messages,
             "input_messages": None,
@@ -459,24 +500,26 @@ class Agent:
         builder = StateGraph(State)
 
         builder.add_node("preprocess", self.preprocess)
+        builder.add_node("info", self.set_info)
         builder.add_node("decide", self.decide)
-        builder.add_node("text", self.process_text)
+        builder.add_node("fields_process", self.response_fields_process)
         builder.add_node("tool_prepare", self.tool_prepare)
         builder.add_node("tools", ToolNode(tools, messages_key="new_messages"))
         builder.add_node("tool_artifact_process", self.tool_artifact_process)
         builder.add_node("postprocess", self.postprocess)
 
         builder.add_edge(START, "preprocess")
-        builder.add_edge("preprocess", "decide")
-        builder.add_edge("decide", "text")
+        builder.add_edge("preprocess", "info")
+        builder.add_edge("info", "decide")
+        builder.add_edge("decide", "fields_process")
         builder.add_conditional_edges(
-            "text",
+            "fields_process",
             self.tool_check,
             {True: "tool_prepare", False: "postprocess"},
         )
         builder.add_edge("tool_prepare", "tools")
         builder.add_edge("tools", "tool_artifact_process")
-        builder.add_edge("tool_artifact_process", "decide")
+        builder.add_edge("tool_artifact_process", "info")
         builder.add_edge("postprocess", END)
 
         return builder.compile()
@@ -518,24 +561,89 @@ class Agent:
             pass
 
 
-@tool
-def modify_mood(delta: int, pet_state: Annotated[PetState, InjectedState("pet")]):
-    """Modify your "mood" state according to your interaction with the user
+class ExpressionSetEvent(Event):
 
-    Args:
-        delta: The amount your "mood" state changes. Positive value for better mood and negative for worse.
-            The corresponding relationship between the absolute value of the change amount and the mood change is as follows:
-            - (0~3): Slight fluctuations
-            - (3~10): Significant swings
-            - (10~20): Obviously ups and downs
-            - (20~50): Severe physical or mental shock
-            - Higher values are forbidden.
-    """
-    print(f"Mood changed: {delta}")
-    pet_state["mood"] = pet_state_modify_check("mood", pet_state["mood"] + delta)
-    return (
-        f'Successfully modified mood state. Your mood state are "{pet_state_desc(pet_state, "mood")}" now.',
-    )
+    def __init__(self, expression_type: str, duration: str):
+        super().__init__()
+
+        self.expression_type = expression_type
+        self.duration = duration
+
+
+class ExpressionUpdateEvent(Event):
+    def __init__(self, expression_type: str):
+        super().__init__()
+
+        self.expression_type = expression_type
+
+    def trigger(self, state):
+        state["expression"] = self.expression_type
+
+
+class ExpressionManageTask(Task):
+    def __init__(self):
+        super().__init__()
+
+        self.should_update = asyncio.Event()
+
+        self.normal_expression: str = "normal"
+        self.current_expression: tuple[str, str] | None = None
+
+        self.state: PetState
+
+        self.last_update_time = time.time()
+        self.delay_task: asyncio.Task | None = None
+
+    async def delay_to_normal(self, manager: TaskManager, expression):
+        try:
+            current_time = time.time()
+            min_time = self.last_update_time + 3
+            await asyncio.sleep(max(0, min_time - current_time))
+            manager.trigger_event(ExpressionUpdateEvent(expression))
+            self.last_update_time = time.time()
+        except asyncio.CancelledError:
+            pass
+
+    async def execute(self, manager, state):
+        self.state = state
+        while True:
+            await self.should_update.wait()
+            if self.delay_task:
+                self.delay_task.cancel()
+                self.delay_task = None
+
+            if self.current_expression:
+                manager.trigger_event(ExpressionUpdateEvent(self.current_expression[0]))
+                self.last_update_time = time.time()
+            else:
+                self.delay_task = asyncio.create_task(
+                    self.delay_to_normal(manager, self.normal_expression)
+                )
+            self.should_update.clear()
+
+    def refresh_normal_expression(self):
+        old_expression = self.normal_expression
+        if self.state["mood"] < -20:
+            self.normal_expression = "sad"
+        if old_expression != self.normal_expression:
+            return True
+        return False
+
+    def on_event(self, event):
+        if isinstance(event, ModifyPetStateEvent):
+            if self.refresh_normal_expression():
+                self.should_update.set()
+        elif isinstance(event, ExpressionSetEvent):
+            self.current_expression = (event.expression_type, event.duration)
+            self.should_update.set()
+        elif isinstance(event, InvokeStartEvent):
+            if self.current_expression and self.current_expression[1] == "continuous":
+                self.current_expression = None
+                self.should_update.set()
+        elif isinstance(event, InvokeEndEvent):
+            if self.current_expression and self.current_expression[1] == "temporary":
+                self.current_expression = None
+                self.should_update.set()
 
 
 class MoveEvent(Event):
@@ -597,7 +705,7 @@ class MoveTask(Task):
 
 @tool(response_format="content_and_artifact")
 def move(target: tuple[int, int], action: Literal["walk", "run"]):
-    """Move to the specified position on the screen
+    """Move smoothly to the specified position on the screen
 
     Args:
         target: The position you want to move to. It can't exceed the screen.
@@ -679,7 +787,22 @@ class GreetingTask(Task):
         )
 
 
-class RandomMoveEmitTask(Task):
+class WanderTask(MoveTask):
+    @property
+    def name(self):
+        return self.__class__.__base__.__name__
+
+    def __init__(self, target):
+        super().__init__(target, "walk")
+
+    def merge(self, old_task):
+        return self, f"Start wandering towards {self.target}"
+
+    def execute_info(self):
+        return f"Wander: from {self.init_pos} to {self.target}; Progress: {round(self.progress[1] / self.progress[0] * 100)}%"
+
+
+class RandomWanderEmitTask(Task):
     check_interval = 1
 
     def __init__(self, interval: tuple[int, int], dist_range: tuple[float, float]):
@@ -710,8 +833,102 @@ class RandomMoveEmitTask(Task):
                 ),
             )
 
-            await manager.add_task(MoveTask(target_pos, "walk"))
+            await manager.add_task(WanderTask(target_pos))
 
     def on_event(self, event):
-        if isinstance(event, MoveEvent):
+        if isinstance(event, (MoveEvent, UserInputEvent)):
             self.remained_time = random.randint(*self.interval)
+
+
+class ThreadedAgent:
+
+    def __init__(self, tools: list[BaseTool], init_tasks: list[Task]):
+        self.agent = Agent(tools, (0, 0))
+        self.init_tasks = init_tasks
+
+        self._thread: threading.Thread = None
+        self._stop_event = threading.Event()
+        self._loop: asyncio.AbstractEventLoop = None
+        self._run_task: asyncio.Task = None
+
+    def run(self, screen_size: tuple[int, int]):
+        if self._thread and self._thread.is_alive():
+            return
+
+        self.agent.screen_size = screen_size
+
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._run_agent_loop,
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self):
+        if not self._thread or not self._thread.is_alive():
+            return
+
+        self._stop_event.set()
+
+        if self._loop and self._run_task:
+            self._loop.call_soon_threadsafe(self._run_task.cancel)
+
+        self._thread.join()
+
+    def add_task(self, task: Task):
+
+        if not self._loop or not self._thread or not self._thread.is_alive():
+            print("Agent not running")
+            return
+
+        asyncio.run_coroutine_threadsafe(
+            self.agent.task_manager.add_task(task), self._loop
+        )
+
+    @property
+    def state(self):
+        return self.agent.state["pet"]
+
+    def register_task_callback(self, key: str, callback: Callable[[Event], None]):
+        self.agent.task_manager.register_callback(key, callback)
+
+    def trigger_event(self, event: Event):
+
+        if not self._thread or not self._thread.is_alive():
+            print("Agent not running")
+            return
+
+        self.agent.task_manager.trigger_event(event)
+
+    def is_running(self):
+        return self._thread is not None and self._thread.is_alive()
+
+    def _run_agent_loop(self):
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+
+        try:
+            self._run_task = self._loop.create_task(self._run_agent())
+            self._loop.run_until_complete(self._run_task)
+        except:
+            pass
+        finally:
+            if self._loop.is_running():
+                self._loop.stop()
+
+            pending = asyncio.all_tasks(self._loop)
+            for task in pending:
+                task.cancel()
+
+            if pending:
+                self._loop.run_until_complete(
+                    asyncio.gather(*pending, return_exceptions=True)
+                )
+
+            self._loop.close()
+            self._loop = None
+            self._run_task = None
+
+    async def _run_agent(self):
+        await self.agent.task_manager.add_tasks_no_check(self.init_tasks)
+        await self.agent.run()
