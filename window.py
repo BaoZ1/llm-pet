@@ -1,55 +1,109 @@
 from PySide6.QtCore import Qt, QMargins, Signal, QPoint, QPointF, QTimer, QRect, QSize
-from PySide6.QtGui import QPainter, QColor, QPen, QBitmap, QMouseEvent, QFont
-from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QLabel
+from PySide6.QtGui import QPainter, QColor, QPen, QBitmap, QMouseEvent, QFont, QKeyEvent, QFocusEvent
+from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QLabel, QTextEdit
 from agent import *
 from typing import cast
 
 
-class Bubble(QLabel):
-    def __init__(self, parent: QWidget, pet: QWidget):
+class TextBubble(QLabel):
+    def __init__(self, parent: QWidget):
         super().__init__(parent=parent)
 
-        self.pet = pet
+        self.setWordWrap(True)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setStyleSheet(
+            """
+            background-color: white;
+            border: 2px solid #ccc;
+            border-radius: 10px;
+            padding: 5px;
+        """
+        )
 
-        # self.setVisible(False)
-        # self.setWordWrap(True)
-        # self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        # self.setStyleSheet(
-        #     """
-        #     background-color: white;
-        #     border: 2px solid #ccc;
-        #     border-radius: 10px;
-        #     padding: 5px;
-        # """
-        # )
+        font = QFont()
+        font.setPointSize(14)
+        self.setFont(font)
 
-        # font = QFont()
-        # font.setPointSize(8)
-        # self.setFont(font)
-
-        # self.hide_timer = QTimer()
-        # self.hide_timer.setSingleShot(True)
-        # self.hide_timer.timeout.connect(self.hide)
-
-        self.show_message("Testtesttest测试测试")
+        self.hide()
+        self.hide_timer = QTimer()
+        self.hide_timer.setSingleShot(True)
+        self.hide_timer.timeout.connect(self.hide)
 
     def show_message(self, text):
+        self.hide_timer.stop()
+
         self.setText(text)
         self.adjustSize()
 
-        self.update_pos()
-
         self.show()
-        # self.hide_timer.start(5000)
+        self.hide_timer.start(5000)
 
-    def update_pos(self):
+    def update_pos(self, pet_geo: QRect):
         screen_size = cast(QWidget, self.parent()).size()
-        pet_rect = self.pet.rect()
+        self_size = self.size()
+
+        if pet_geo.y() >= self_size.height():
+            y = pet_geo.top() - self_size.height()
+        else:
+            y = pet_geo.bottom()
+        raw_x = pet_geo.x() + (pet_geo.width() - self_size.width()) // 2
+        x = min(max(0, raw_x), screen_size.width() - self_size.width())
+        self.move(x, y)
+
+class InputBubble(QTextEdit):
+    text_submitted = Signal(str)
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent=parent)
+
+        self.setStyleSheet(
+            """
+            QTextEdit {
+                background-color: white;
+                border: 2px solid #ccc;
+                border-radius: 10px;
+                padding: 5px;
+            }
+        """
+        )
+        
+        self.hide()
+        
+    def show(self):
+        super().show()
+        self.setFocus()
+
+    def keyPressEvent(self, e: QKeyEvent):
+        if e.key() == Qt.Key.Key_Return:
+            if e.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                self.insertPlainText('\n')
+            else:
+                self.text_submitted.emit(self.toPlainText().strip())
+                self.clear()
+                self.hide()
+        else:
+            super().keyPressEvent(e)
+
+    def focusOutEvent(self, e):
+        super().focusOutEvent(e)
+        self.clear()
+        self.hide()
+
+    def update_pos(self, pet_geo: QRect):
+        screen_size = cast(QWidget, self.parent()).size()
+        self_size = self.size()
+
+        y = pet_geo.bottom()
+        raw_x = pet_geo.x() + (pet_geo.width() - self_size.width()) // 2
+        x = min(max(0, raw_x), screen_size.width() - self_size.width())
+        self.move(x, y)
 
 
 class Pet(QWidget):
     send_event = Signal(Event)
     add_task = Signal(Task)
+    clicked = Signal()
+    moved = Signal(QRect)
 
     def __init__(self, parent, state: PetState):
         super().__init__(parent)
@@ -69,8 +123,7 @@ class Pet(QWidget):
         self.press_pos: QPointF
         self.start_pos: QPoint
         self.dragging = False
-        
-        self.bubble = Bubble(parent, self)
+
 
     def update_pos(self, event: MoveEvent):
         self.move(*event.new_pos)
@@ -101,10 +154,10 @@ class Pet(QWidget):
         mask_painter.end()
 
         self.setMask(mask)
-        
+
     def moveEvent(self, event):
         super().moveEvent(event)
-        self.bubble.update_pos()
+        self.moved.emit(self.geometry())
 
     def mousePressEvent(self, event: QMouseEvent):
         self.press_pos = event.scenePosition()
@@ -121,11 +174,14 @@ class Pet(QWidget):
             self.send_event.emit(DragEvent(self.pos().toTuple()))
 
     def mouseReleaseEvent(self, event: QMouseEvent):
-        delta = event.scenePosition() - self.press_pos
-        self.move(self.start_pos + delta.toPoint())
-        self.press_pos = None
-        self.dragging = False
-        self.send_event.emit(DragEvent(self.pos().toTuple(), "end"))
+        if not self.dragging:
+            self.clicked.emit()
+        else:
+            delta = event.scenePosition() - self.press_pos
+            self.move(self.start_pos + delta.toPoint())
+            self.press_pos = None
+            self.dragging = False
+            self.send_event.emit(DragEvent(self.pos().toTuple(), "end"))
 
 
 class MainWindow(QWidget):
@@ -163,13 +219,21 @@ class MainWindow(QWidget):
         self.pet.send_event.connect(self.agent.trigger_event)
         self.pet.add_task.connect(self.agent.add_task)
 
+        self.text_bubble = TextBubble(self)
+        self.pet.moved.connect(self.text_bubble.update_pos)
+        
+        self.input_bubble = InputBubble(self)
+        self.pet.moved.connect(self.input_bubble.update_pos)
+        self.pet.clicked.connect(self.input_bubble.show)
+        self.input_bubble.text_submitted.connect(print)
+
     def on_event(self, e: Event):
         if isinstance(e, MoveEvent):
             self.pet.update_pos(e)
         elif isinstance(e, ExpressionUpdateEvent):
             self.pet.update_expression(e.expression_type)
-        # elif isinstance(e, PetSpeakEvent):
-        #     self.pet.bubble.show_message(e.content)
+        elif isinstance(e, PetSpeakEvent):
+            self.text_bubble.show_message(e.content)
 
     def showEvent(self, a0):
         ret = super().showEvent(a0)
