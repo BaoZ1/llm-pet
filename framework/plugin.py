@@ -3,23 +3,72 @@ import importlib.util
 import json
 import pathlib
 from langchain_core.tools import tool
-from typing import Any, ClassVar, Sequence, TYPE_CHECKING
+from typing import (
+    Any,
+    ClassVar,
+    Sequence,
+    TYPE_CHECKING,
+    Protocol,
+    runtime_checkable,
+)
+import sys
+import inspect
+import yaml
 
 if TYPE_CHECKING:
     from .agent import Task, Event, Agent, TaskManager
     from .worker import ThreadedWorker
+    from .config import BaseConfig
     from PySide6.QtWidgets import QWidget
 
 
-class PluginInterface:
-    name: ClassVar[str]
-    dep_names: ClassVar[Sequence[str]] = []
+class PluginProtocol(Protocol):
+    pass
 
-    def __init__(self, manager: PluginManager, deps: dict[str, PluginInterface]):
+
+@runtime_checkable
+class DisplayPluginProtocol(PluginProtocol, Protocol):
+    def widgets(self) -> list[QWidget]:
+        raise
+
+
+@runtime_checkable
+class PetPluginProtocol(DisplayPluginProtocol, Protocol):
+    def pet(self) -> QWidget:
+        raise
+
+    def widgets(self):
+        return [self.pet()]
+
+
+class BasePlugin:
+    deps: ClassVar[Sequence[type[BasePlugin] | type[PluginProtocol]]] = []
+
+    def __init__(self, manager: PluginManager):
         self.manager = manager
-        self.deps = deps
 
-    def init(self, screen: QWidget):
+    @classmethod
+    def root_dir(cls):
+        return pathlib.Path(inspect.getmodule(cls).__file__).parent
+
+    @classmethod
+    def config_type(cls):
+        return getattr(sys.modules[cls.__module__], "Config")
+
+    @classmethod
+    def config(cls) -> BaseConfig:
+        config_file = cls.root_dir() / "config.yaml"
+        assert config_file.exists()
+        config_dict = yaml.load(config_file.read_text("utf-8"), yaml.Loader)
+        return cls.config_type()(**config_dict)
+
+    def dep[T: BasePlugin | PluginProtocol](self, dep: type[T]) -> T:
+        assert dep in self.deps
+        d = self.manager.get_plugins(dep)
+        assert len(d) > 0
+        return d[0]
+
+    def init(self):
         pass
 
     def prompts(self) -> dict[str, str | pathlib.Path]:
@@ -47,7 +96,7 @@ class PluginInterface:
 class Tool:
     with_artifect: ClassVar[bool] = False
 
-    def __init__(self, plugin: PluginInterface):
+    def __init__(self, plugin: BasePlugin):
         self.plugin = plugin
 
     def invoke(self, *args, **kwargs):
@@ -64,65 +113,60 @@ class Tool:
 class PluginManager:
     def __init__(
         self,
-        window: QWidget,
         agent: Agent,
         task_manager: TaskManager,
         worker: ThreadedWorker,
     ):
-        self.window = window
         self.agent = agent
         self.task_manager = task_manager
         self.worker = worker
 
     def init(self):
-        plugin_class_list: list[type[PluginInterface]] = []
+        plugin_class_list: list[type[BasePlugin]] = []
         plugins_root = pathlib.Path("plugins")
-        for plugin_folder in plugins_root.iterdir():
-            import_file = plugin_folder / "plugin.py"
-            spec = importlib.util.spec_from_file_location(
-                "plugin", str(import_file.absolute())
-            )
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            plugin_class_list.append(getattr(module, "Plugin"))
+        for import_file in plugins_root.rglob("plugin.py"):
+            module_name = str(
+                import_file.absolute().relative_to(sys.path[0]).with_suffix("")
+            ).replace("\\", ".")
+            if module_name not in sys.modules:
+                spec = importlib.util.spec_from_file_location(
+                    module_name, str(import_file.absolute())
+                )
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                sys.modules[module_name] = module
+            else:
+                module = sys.modules[module_name]
+            plugin_class: type[BasePlugin] = getattr(module, "Plugin")
+            if plugin_class.config().enabled:
+                plugin_class_list.append()
 
-        missing_deps: list[type[PluginInterface]] = []
-        self.plugins: dict[str, PluginInterface] = {}
-        self.ordered_plugins: list[PluginInterface] = []
+        missing_deps: list[type[BasePlugin]] = []
+        self.plugins: list[BasePlugin] = []
         for plugin_class in plugin_class_list:
-            if plugin_class.dep_names:
+            if plugin_class.deps:
                 missing_deps.append(plugin_class)
             else:
-                p = plugin_class(self, {})
-                self.plugins[p.name] = p
-                self.ordered_plugins.append(p)
+                p = plugin_class(self)
+                self.plugins.append(p)
         while missing_deps:
-            new_mssing_deps = []
+            new_mssing_deps: list[type[BasePlugin]] = []
             for plugin_class in missing_deps:
-                for dep_name in plugin_class.dep_names:
-                    if dep_name not in self.plugins:
+                for dep in plugin_class.deps:
+                    if len(self.get_plugins(dep)) == 0:
                         new_mssing_deps.append(plugin_class)
                         break
                 if plugin_class not in new_mssing_deps:
-                    p = plugin_class(
-                        self,
-                        {
-                            dep_name: self.plugins[dep_name]
-                            for dep_name in plugin_class.dep_names
-                        },
-                    )
-                    self.plugins[p.name] = p
-                    self.ordered_plugins.append(p)
+                    p = plugin_class(self)
+                    self.plugins.append(p)
             if len(new_mssing_deps) == len(missing_deps):
-                raise
+                raise Exception([p.deps for p in new_mssing_deps])
             missing_deps = new_mssing_deps
 
         tools = []
-        tasks = []
-        for p in self.ordered_plugins:
-            p.init(self.window)
+        for p in self.plugins:
+            p.init()
             tools.extend([f(p).langchain_wrap() for f in p.tools()])
-            tasks.extend(p.init_tasks())
 
         prompt_folder = pathlib.Path("prompts/zh-CN")
         with (
@@ -131,9 +175,9 @@ class PluginManager:
         ):
             prompt_template = t_f.read()
             prompt_comps: dict[str, str] = json.load(d_f)
-            
+
         plugin_prompt_comps: list[dict[str, str]] = []
-        for p in self.plugins.values():
+        for p in self.plugins:
             str_prompts: dict[str, str] = {}
             for key, data in p.prompts().items():
                 if isinstance(data, str):
@@ -141,11 +185,11 @@ class PluginManager:
                 elif isinstance(data, pathlib.Path):
                     str_prompts[key] = data.read_text("utf-8")
             plugin_prompt_comps.append(str_prompts)
-                        
+
         prompt_comps |= self.merge_str_dict(plugin_prompt_comps)
         system_prompt = prompt_template.format_map(prompt_comps)
 
-        return system_prompt, tools, tasks
+        return system_prompt, tools
 
     def merge_str_dict(
         self, dicts: Sequence[dict[Any, str]], sep: str = "\n"
@@ -161,7 +205,7 @@ class PluginManager:
 
     def infos(self):
         raw_infos: dict[str, list[dict[str | None, Any]]] = {}
-        for p in self.ordered_plugins:
+        for p in self.plugins:
             for title, infos in p.infos().items():
                 raw_infos.setdefault(title, []).append(infos)
         md_structured_infos: dict[str, str] = {}
@@ -182,6 +226,14 @@ class PluginManager:
         formated_infos = [f"[Info] {k}\n{v}" for k, v in md_structured_infos.items()]
         return formated_infos
 
+    def get_plugins(self, type: type[BasePlugin] | type[PluginProtocol]):
+        return list(
+            filter(
+                lambda p: isinstance(p, type),
+                self.plugins,
+            )
+        )
+
     def on_event(self, e: Event):
-        for p in self.plugins.values():
+        for p in self.plugins:
             p.on_event(e)

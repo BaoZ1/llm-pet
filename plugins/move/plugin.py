@@ -1,12 +1,13 @@
+from framework.plugin import BasePlugin, PetPluginProtocol
+from framework.config import BaseConfig
+from framework.event import Event, Task
+from framework.agent import PluginFieldEvent
 import asyncio
 from dataclasses import dataclass
 import math
 import pathlib
-from typing import Literal, cast
-from framework.plugin import PluginInterface, Tool
-from plugins.base.plugin import Plugin as BasePetPlugin
-from framework.event import Event, Task
-from framework.agent import PluginFieldEvent
+from typing import Literal
+from PySide6.QtWidgets import QApplication
 
 
 @dataclass
@@ -23,8 +24,8 @@ class MoveEvent(Event):
 
 class MoveTask(Task):
     speed = {
-        "walk": 60,
-        "run": 200,
+        "walk": 200,
+        "run": 500,
     }
     interval = 0.02
 
@@ -71,13 +72,13 @@ class MoveTask(Task):
         return f"Move: from {self.init_pos} to {self.target}; Progress: {round(self.progress[1] / self.progress[0] * 100)}%"
 
 
-class Plugin(PluginInterface):
+class Plugin(BasePlugin):
     name = "move"
-    dep_names = ["base_pet"]
+    deps = [PetPluginProtocol]
 
-    def init(self, screen):
-        self.pet = cast(BasePetPlugin, self.deps["base_pet"]).pet
-        self.screen_size: tuple[int, int] = (screen.size() - self.pet.size()).toTuple()
+    def init(self):
+        self.pet = self.dep(PetPluginProtocol).pet()
+        self.screen_size: tuple[int, int] = (QApplication.primaryScreen().size() - self.pet.size()).toTuple()
 
     def prompts(self):
         return {"json_fields": pathlib.Path(__file__).with_name("move_field.md")}
@@ -90,6 +91,7 @@ class Plugin(PluginInterface):
             }
         }
 
+
     def on_event(self, e):
         match e:
             case PluginFieldEvent("move", args):
@@ -98,3 +100,8 @@ class Plugin(PluginInterface):
                 )
             case MoveEvent(new_pos, _):
                 self.pet.move(*new_pos)
+
+
+
+class Config(BaseConfig):
+    pass

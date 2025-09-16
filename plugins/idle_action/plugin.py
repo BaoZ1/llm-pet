@@ -1,12 +1,12 @@
+from framework.plugin import BasePlugin, PetPluginProtocol
+from framework.config import BaseConfig
+from framework.event import Event, PlainEvent, Task
 import asyncio
 from dataclasses import dataclass
 import math
 import random
-from framework.event import Event, PlainEvent, Task
-from framework.plugin import PluginInterface
-from typing import cast
-from plugins.base.plugin import Plugin as BasePetPlugin
 from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QApplication
 
 
 @dataclass
@@ -24,7 +24,7 @@ class WanderTask(Task):
         self.target = target
         self.init_pos = init_pos
         self.progress: tuple[int, int] = None
-        
+
         self.speed = 50
 
         self.running = True
@@ -59,13 +59,15 @@ class WanderTask(Task):
         self.progress = (step_count, step_count)
 
 
-class Plugin(PluginInterface):
+class Plugin(BasePlugin):
     name = "idle_action"
-    dep_names = ["base_pet"]
+    deps = [PetPluginProtocol]
 
-    def init(self, screen):
-        self.pet = cast(BasePetPlugin, self.deps["base_pet"]).pet
-        self.screen_range: tuple[int, int] = (screen.size() - self.pet.size()).toTuple()
+    def init(self):
+        self.pet = self.dep(PetPluginProtocol).pet()
+        self.screen_range: tuple[int, int] = (
+            QApplication.primaryScreen().size() - self.pet.size()
+        ).toTuple()
 
         self.bored_interval = (80, 200)
         self.bored_timer = QTimer()
@@ -106,6 +108,12 @@ class Plugin(PluginInterface):
                 self.pet.move(*new_pos)
             case _:
                 if "move" in e.tags:
-                    self.wander_timer.start(random.randrange(*self.wander_interval) * 1e3)
+                    self.wander_timer.start(
+                        random.randrange(*self.wander_interval) * 1e3
+                    )
                 if "user" in e.tags:
                     self.bored_timer.start(random.randrange(*self.bored_interval) * 1e3)
+
+
+class Config(BaseConfig):
+    pass

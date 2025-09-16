@@ -1,25 +1,15 @@
-import asyncio
+from framework.plugin import BasePlugin, PetPluginProtocol
+from framework.config import BaseConfig
 from framework.agent import Event, Task
-from framework.plugin import PluginInterface
-from plugins.base.plugin import Plugin as BasePetPlugin
-from typing import cast
-from PySide6.QtCore import Qt, QObject, QEvent, QPointF, QPoint, Signal
-from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QWidget
+import asyncio
+from PySide6.QtCore import Qt, QObject, QEvent, QPoint, Signal
+from PySide6.QtGui import QMouseEvent, QCursor
 
 
 class DragEventFilter(QObject):
     pressed = Signal(QMouseEvent)
     moved = Signal(QMouseEvent)
     released = Signal(QMouseEvent)
-
-    def __init__(self, target: QWidget, screen: QWidget):
-        super().__init__()
-
-        self.target = target
-        self.target.installEventFilter(self)
-
-        self.screen = screen
 
     def eventFilter(self, watched, event):
         if isinstance(event, QMouseEvent):
@@ -68,28 +58,29 @@ class DragTask(Task):
             self.running = False
 
 
-class Plugin(PluginInterface):
+class Plugin(BasePlugin):
     name = "drag"
-    dep_names = ["base_pet"]
+    deps = [PetPluginProtocol]
 
-    def init(self, screen):
-        self.press_pos: QPointF
+    def init(self):
+        self.press_pos: QPoint
         self.start_pos: QPoint
         self.dragging = False
 
-        self.pet = cast(BasePetPlugin, self.deps["base_pet"]).pet
-        self.event_filter = DragEventFilter(self.pet, screen)
+        self.pet = self.dep(PetPluginProtocol).pet()
+        self.event_filter = DragEventFilter()
+        self.pet.installEventFilter(self.event_filter)
         self.event_filter.pressed.connect(self.mouse_press)
         self.event_filter.moved.connect(self.mouse_move)
         self.event_filter.released.connect(self.mouse_release)
 
     def mouse_press(self, e: QMouseEvent):
-        self.press_pos = e.scenePosition()
+        self.press_pos = QCursor.pos()
         self.start_pos = self.pet.pos()
 
     def mouse_move(self, e: QMouseEvent):
-        delta = e.scenePosition() - self.press_pos
-        self.pet.move(self.start_pos + delta.toPoint())
+        delta = QCursor.pos() - self.press_pos
+        self.pet.move(self.start_pos + delta)
         if not self.dragging:
             self.trigger_event(DragStartEvent())
             self.add_task(DragTask())
@@ -99,8 +90,12 @@ class Plugin(PluginInterface):
 
     def mouse_release(self, e: QMouseEvent):
         if self.dragging:
-            delta = e.scenePosition() - self.press_pos
-            self.pet.move(self.start_pos + delta.toPoint())
+            delta = QCursor.pos() - self.press_pos
+            self.pet.move(self.start_pos + delta)
             self.press_pos = None
             self.dragging = False
             self.trigger_event(DragEndEvent())
+
+
+class Config(BaseConfig):
+    pass

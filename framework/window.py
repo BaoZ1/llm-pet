@@ -1,9 +1,22 @@
-from PySide6.QtCore import Qt, Signal, QPoint, QRect, QSize, QObject
-from PySide6.QtGui import QCursor, QMoveEvent
-from PySide6.QtWidgets import QApplication, QWidget, QPushButton
+from __future__ import annotations
+from PySide6.QtCore import Qt, Signal, QPoint, QRect, QObject
+from PySide6.QtGui import QMoveEvent, QResizeEvent, QShowEvent, QIcon, QPixmap, QAction
+from PySide6.QtWidgets import QApplication, QWidget, QSystemTrayIcon, QMenu, QMessageBox
 from typing import Sequence
 from enum import Enum, auto
 from .agent import Event
+
+
+class TransparentWindow(QWidget):
+    def __init__(self):
+        super().__init__()
+
+        self.setWindowFlag(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
 
 class BubbleDirection(Enum):
@@ -20,54 +33,63 @@ class BubbleOverflowAction(Enum):
     Auto_Place = auto()
 
 
-class BubbleRef(QObject):
-    moved = Signal()
+class MoveEventFilter(QObject):
+    moved = Signal(QMoveEvent)
 
-    def __init__(self, ref: QWidget | None):
+    def __init__(self, target: QWidget, screen: QWidget):
         super().__init__()
 
-        self.ref = ref
-        self.old_move_event = self.ref.moveEvent
-        self.ref.moveEvent = self.ref_move_event
+        self.target = target
+        self.target.installEventFilter(self)
 
-    def ref_move_event(self, e: QMoveEvent):
-        self.old_move_event(e)
-        self.moved.emit()
+        self.screen = screen
 
-    def get_rect(self):
-        if self.ref is None:
-            return QRect(QCursor.pos(), QSize(0, 0))
-        if isinstance(self.ref, QWidget):
-            return self.ref.geometry()
+
+class BubbleRef(QObject):
+    moved = Signal()
+    
+    def get_rect(self) -> QRect:
         raise
 
+class WidgetBubbleRef(BubbleRef):
+    def __init__(self, ref: QWidget):
+        super().__init__()
+        
+        self.ref = ref
+        ref.installEventFilter(self)
+        
+    def get_rect(self):
+        return self.ref.geometry()
+    
+    def eventFilter(self, watched, event):
+        if isinstance(event, QMoveEvent):
+            self.moved.emit()
+        return False
 
-class BubbleController:
+
+class BubbleController(QObject):
+
     def __init__(
         self,
-        screen: QWidget,
         target: QWidget,
         ref: BubbleRef,
         direction: tuple[BubbleDirection, BubbleDirection],
         overflow_actions: Sequence[BubbleOverflowAction] = [],
     ):
-        self.screen = screen
+        super().__init__()
         self.target = target
         self.ref = ref
         self.direction = direction
         self.overflow_actions = overflow_actions
 
-        self.old_resize_event = self.target.resizeEvent
-        self.target.resizeEvent = self.target_resize_event
+        self.target.installEventFilter(self)
 
         self.ref.moved.connect(self.update_pos)
 
-    def bind_screen(self, screen: QWidget):
-        self.screen = screen
-
-    def target_resize_event(self, e):
-        self.old_resize_event(e)
-        self.update_pos()
+    def eventFilter(self, watched, event):
+        if isinstance(event, (QResizeEvent, QShowEvent)):
+            self.update_pos()
+        return False
 
     def calc_rect(self, direction: tuple[BubbleDirection, BubbleDirection]):
         ref_rect = self.ref.get_rect()
@@ -94,10 +116,12 @@ class BubbleController:
         return target_rect
 
     def update_pos(self):
-        rect = self.calc_rect(self.direction)
+        if not self.target.isVisible():
+            return
 
+        rect = self.calc_rect(self.direction)
         target_rect = self.ref.get_rect()
-        screen_rect = self.screen.rect()
+        screen_rect = QApplication.primaryScreen().geometry()
 
         for action in self.overflow_actions:
             if screen_rect.contains(rect):
@@ -164,28 +188,22 @@ class BubbleController:
                         new_direction.append(BubbleDirection.Center)
 
                     rect = self.calc_rect(new_direction)
+        self.target.move(rect.topLeft())
 
-        return self.target.move(rect.topLeft())
 
+def config_bubble(
+    w: QWidget,
+    ref: BubbleRef,
+    direction: tuple[BubbleDirection, BubbleDirection],
+    overflow_actions: Sequence[BubbleOverflowAction] = [],
+):
 
-class MainWindow(QWidget):
-    def __init__(self, app: QApplication):
-        super().__init__()
-
-        self.setWindowFlag(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-
-        self.app = app
-
-        self.quit_btn = QPushButton(self)
-        self.quit_btn.clicked.connect(self.close)
-
-    def closeEvent(self, a0):
-        self.app.quit()
+    w._bubble_controller = BubbleController(
+        w,
+        ref,
+        direction,
+        overflow_actions,
+    )
 
 
 class EventBridge(QObject):
@@ -194,3 +212,65 @@ class EventBridge(QObject):
     def __init__(self):
         super().__init__()
         self.moveToThread(QApplication.instance().thread())
+
+
+class TestTray(QWidget):
+    instance: TestTray | None = None
+
+    @staticmethod
+    def init():
+        if TestTray.instance is None:
+            TestTray.instance = TestTray()
+
+    def __init__(self):
+        super().__init__()
+
+        self.tray_icon = QSystemTrayIcon(self)
+
+        icon = QIcon()
+        pixmap = QPixmap(16, 16)
+        pixmap.fill("#3498db")
+        icon.addPixmap(pixmap)
+        self.tray_icon.setIcon(icon)
+
+        self.tray_icon.setToolTip("Running...")
+
+        self.create_tray_menu()
+
+        self.tray_icon.activated.connect(self.on_tray_activated)
+
+        self.tray_icon.show()
+
+    def create_tray_menu(self):
+        menu = QMenu()
+
+        settings_action = QAction("设置", self)
+        settings_action.triggered.connect(self.show_settings)
+        menu.addAction(settings_action)
+
+        menu.addSeparator()
+
+        exit_action = QAction("退出", self)
+        exit_action.triggered.connect(self.quit_application)
+        menu.addAction(exit_action)
+
+        self.tray_icon.setContextMenu(menu)
+
+    def on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self.show_notification()
+
+    def show_settings(self):
+        QMessageBox.information(self, "设置", "这里是设置界面")
+
+    def show_notification(self):
+        self.tray_icon.showMessage(
+            "应用程序通知",
+            "应用程序正在后台运行",
+            QSystemTrayIcon.MessageIcon.Information,
+            2000,
+        )
+
+    def quit_application(self):
+        self.tray_icon.hide()
+        QApplication.quit()

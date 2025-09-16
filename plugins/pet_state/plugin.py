@@ -1,10 +1,9 @@
-import asyncio
-import random
+from framework.plugin import BasePlugin
+from framework.config import BaseConfig
+from framework.event import Event, PlainEvent
+from framework.agent import PluginFieldEvent
 from typing import TypedDict
 from dataclasses import dataclass
-from framework.event import Event, Task, PlainEvent
-from framework.plugin import PluginInterface
-from framework.agent import PluginFieldEvent
 import pathlib
 
 
@@ -56,32 +55,9 @@ class ModifyPetStateEvent(Event):
     delta: int
 
 
-class DigestTask(Task):
-    check_interval: int = 3
+class Plugin(BasePlugin):
 
-    def __init__(
-        self,
-        interval: tuple[int, int],
-        reduce_range: tuple[int, int],
-    ):
-        self.interval = interval
-        self.reduce_range = reduce_range
-        self.remain_time: int
-
-    async def execute(self, manager):
-        while True:
-            self.remain_time = random.randint(*self.interval)
-            while self.remain_time > 0:
-                await asyncio.sleep(self.check_interval)
-                self.remain_time -= self.check_interval
-            reduce_amount = random.randint(*self.reduce_range)
-            manager.trigger_event(ModifyPetStateEvent("hunger", -reduce_amount))
-
-
-class Plugin(PluginInterface):
-    name = "pet_state"
-
-    def init(self, screen): 
+    def init(self): 
         self.state = PetState(mood=50, health=98, hunger=90)
 
     def prompts(self):
@@ -93,9 +69,6 @@ class Plugin(PluginInterface):
                 name: self.state_desc(name) for name in PET_STATE_DESC_MAPPER.keys()
             }
         }
-
-    def init_tasks(self):
-        return [DigestTask((20, 30), (1, 3))]
 
     def on_event(self, e):
         match e:
@@ -142,3 +115,8 @@ class Plugin(PluginInterface):
         # return base_text + extra_text
         if len(extra_text):
             self.trigger_event(PlainEvent(extra_text))
+
+
+
+class Config(BaseConfig):
+    pass
