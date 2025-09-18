@@ -1,5 +1,4 @@
 from framework.plugin import BasePlugin, PetPluginProtocol
-from framework.config import BaseConfig
 import random
 from PySide6.QtWidgets import QApplication
 
@@ -20,5 +19,3 @@ class Plugin(BasePlugin):
         pet.move(*init_pos)
 
 
-class Config(BaseConfig):
-    pass

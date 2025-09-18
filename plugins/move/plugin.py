@@ -1,5 +1,4 @@
 from framework.plugin import BasePlugin, PetPluginProtocol
-from framework.config import BaseConfig
 from framework.event import Event, Task
 from framework.agent import PluginFieldEvent
 import asyncio
@@ -102,6 +101,3 @@ class Plugin(BasePlugin):
                 self.pet.move(*new_pos)
 
 
-
-class Config(BaseConfig):
-    pass

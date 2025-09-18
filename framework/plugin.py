@@ -10,15 +10,16 @@ from typing import (
     TYPE_CHECKING,
     Protocol,
     runtime_checkable,
+    cast,
 )
 import sys
 import inspect
 import yaml
+from .config import BaseConfig
 
 if TYPE_CHECKING:
     from .agent import Task, Event, Agent, TaskManager
     from .worker import ThreadedWorker
-    from .config import BaseConfig
     from PySide6.QtWidgets import QWidget
 
 
@@ -46,21 +47,36 @@ class BasePlugin:
 
     def __init__(self, manager: PluginManager):
         self.manager = manager
+        self.config = self.read_config()
 
     @classmethod
     def root_dir(cls):
         return pathlib.Path(inspect.getmodule(cls).__file__).parent
 
     @classmethod
-    def config_type(cls):
-        return getattr(sys.modules[cls.__module__], "Config")
+    def config_type(cls) -> type[BaseConfig]:
+        if hasattr(sys.modules[cls.__module__], "Config"):
+            return getattr(sys.modules[cls.__module__], "Config")
+        return BaseConfig
 
     @classmethod
-    def config(cls) -> BaseConfig:
+    def config_fields(cls) -> tuple[str, ...]:
+        return cls.config_type().__match_args__
+
+    @classmethod
+    def read_config(cls):
         config_file = cls.root_dir() / "config.yaml"
-        assert config_file.exists()
-        config_dict = yaml.load(config_file.read_text("utf-8"), yaml.Loader)
+        if config_file.exists():
+            config_dict = yaml.load(config_file.read_text("utf-8"), yaml.Loader)
+        else:
+            config_dict = {}
         return cls.config_type()(**config_dict)
+
+    def save_config(self):
+        config_file = self.root_dir() / "config.yaml"
+        config_file.write_text(
+            yaml.dump(self.config.__dict__, sort_keys=False), "utf-8"
+        )
 
     def dep[T: BasePlugin | PluginProtocol](self, dep: type[T]) -> T:
         assert dep in self.deps
@@ -138,8 +154,8 @@ class PluginManager:
             else:
                 module = sys.modules[module_name]
             plugin_class: type[BasePlugin] = getattr(module, "Plugin")
-            if plugin_class.config().enabled:
-                plugin_class_list.append()
+            if plugin_class.read_config().enabled:
+                plugin_class_list.append(plugin_class)
 
         missing_deps: list[type[BasePlugin]] = []
         self.plugins: list[BasePlugin] = []
@@ -237,3 +253,6 @@ class PluginManager:
     def on_event(self, e: Event):
         for p in self.plugins:
             p.on_event(e)
+
+    def base_model(self):
+        return self.agent.base_model

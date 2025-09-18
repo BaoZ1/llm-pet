@@ -1,9 +1,8 @@
 from framework.plugin import BasePlugin, PetPluginProtocol
-from framework.config import BaseConfig
 from framework.event import Event
 from framework.window import (
     TransparentWindow,
-    config_bubble,
+    set_bubble,
     WidgetBubbleRef,
     BubbleDirection,
     BubbleOverflowAction,
@@ -98,6 +97,7 @@ class UserInputEvent(Event):
         return self.content
 
 
+
 class Plugin(BasePlugin):
     name = "base_chat"
     deps = [PetPluginProtocol]
@@ -112,7 +112,7 @@ class Plugin(BasePlugin):
         self.event_filter.released.connect(self.mouse_release)
 
         self.input_bubble = InputBubble()
-        config_bubble(
+        set_bubble(
             self.input_bubble,
             WidgetBubbleRef(self.pet),
             (BubbleDirection.Bottom, BubbleDirection.Center),
@@ -132,8 +132,3 @@ class Plugin(BasePlugin):
     def mouse_release(self):
         if not self.press_moved:
             self.input_bubble.show()
-
-
-
-class Config(BaseConfig):
-    pass

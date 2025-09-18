@@ -1,5 +1,4 @@
 from framework.plugin import BasePlugin
-from framework.config import BaseConfig
 from plugins.pet_state.plugin import Plugin as PetStatePlugin, ModifyPetStateEvent
 from PySide6.QtCore import QTimer
 import random
@@ -20,7 +19,3 @@ class Plugin(BasePlugin):
         reduce_amount = random.randint(*self.reduce_range)
         self.trigger_event(ModifyPetStateEvent("hunger", -reduce_amount))
         self.timer.start(random.randrange(*self.interval) * 1e3)
-
-
-class Config(BaseConfig):
-    pass

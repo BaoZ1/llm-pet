@@ -1,5 +1,4 @@
 from framework.plugin import BasePlugin
-from framework.config import BaseConfig
 from framework.event import Event, PlainEvent
 from framework.agent import PluginFieldEvent
 from typing import TypedDict
@@ -118,5 +117,3 @@ class Plugin(BasePlugin):
 
 
 
-class Config(BaseConfig):
-    pass

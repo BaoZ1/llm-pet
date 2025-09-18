@@ -1,0 +1,7 @@
+enabled: true
+
+expression_map:
+  normal: F01
+  happy: F05
+  sad: F04
+  angry: F03

@@ -1,7 +1,6 @@
 from framework.plugin import BasePlugin, PetPluginProtocol
-from framework.config import BaseConfig
 from framework.agent import InvokeStartEvent, SpeakEvent
-from framework.window import TransparentWindow, config_bubble, WidgetBubbleRef, BubbleDirection, BubbleOverflowAction
+from framework.window import TransparentWindow, set_bubble, WidgetBubbleRef, BubbleDirection, BubbleOverflowAction
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QLayout
@@ -74,7 +73,7 @@ class Plugin(BasePlugin):
     def init(self):
         pet = self.dep(PetPluginProtocol).pet()
         self.text_bubble = TextBubble()
-        config_bubble(
+        set_bubble(
             self.text_bubble,
             WidgetBubbleRef(pet),
             [BubbleDirection.Top, BubbleDirection.Center],
@@ -91,6 +90,3 @@ class Plugin(BasePlugin):
                 self.text_bubble.show_message(text)
 
 
-
-class Config(BaseConfig):
-    pass

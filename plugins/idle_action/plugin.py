@@ -1,5 +1,4 @@
 from framework.plugin import BasePlugin, PetPluginProtocol
-from framework.config import BaseConfig
 from framework.event import Event, PlainEvent, Task
 import asyncio
 from dataclasses import dataclass
@@ -115,5 +114,3 @@ class Plugin(BasePlugin):
                     self.bored_timer.start(random.randrange(*self.bored_interval) * 1e3)
 
 
-class Config(BaseConfig):
-    pass

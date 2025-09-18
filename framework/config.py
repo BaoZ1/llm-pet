@@ -15,4 +15,4 @@ yaml.add_constructor(
 
 @dataclass
 class BaseConfig:
-    enabled: bool
+    enabled: bool = False

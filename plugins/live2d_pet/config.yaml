@@ -1,1 +1,3 @@
-enabled: false
+enabled: true
+
+model_json: !path "test_model\\Haru.model3.json"

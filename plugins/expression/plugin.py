@@ -1,5 +1,4 @@
 from framework.plugin import BasePlugin
-from framework.config import BaseConfig
 from framework.agent import InvokeStartEvent, InvokeEndEvent, PluginFieldEvent
 from framework.event import Event
 from dataclasses import dataclass
@@ -93,7 +92,3 @@ class Plugin(BasePlugin):
                     self.current_expression = None
                     self.try_set_expression()
 
-
-
-class Config(BaseConfig):
-    pass

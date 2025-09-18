@@ -1,6 +1,8 @@
+from typing import cast
 from framework.plugin import BasePlugin, PetPluginProtocol
 from framework.config import BaseConfig
 from framework.agent import Event, Task
+from dataclasses import dataclass
 import asyncio
 from PySide6.QtCore import Qt, QObject, QEvent, QPoint, Signal
 from PySide6.QtGui import QMouseEvent, QCursor
@@ -58,6 +60,10 @@ class DragTask(Task):
             self.running = False
 
 
+@dataclass
+class Config(BaseConfig):
+    trigger_event: bool = False
+
 class Plugin(BasePlugin):
     name = "drag"
     deps = [PetPluginProtocol]
@@ -82,11 +88,13 @@ class Plugin(BasePlugin):
         delta = QCursor.pos() - self.press_pos
         self.pet.move(self.start_pos + delta)
         if not self.dragging:
-            self.trigger_event(DragStartEvent())
-            self.add_task(DragTask())
             self.dragging = True
+            if cast(Config, self.config).trigger_event:
+                self.trigger_event(DragStartEvent())
+                self.add_task(DragTask())
         else:
-            self.trigger_event(DragEvent())
+            if cast(Config, self.config).trigger_event:
+                self.trigger_event(DragEvent())
 
     def mouse_release(self, e: QMouseEvent):
         if self.dragging:
@@ -94,8 +102,6 @@ class Plugin(BasePlugin):
             self.pet.move(self.start_pos + delta)
             self.press_pos = None
             self.dragging = False
-            self.trigger_event(DragEndEvent())
+            if cast(Config, self.config).trigger_event:
+                self.trigger_event(DragEndEvent())
 
-
-class Config(BaseConfig):
-    pass
