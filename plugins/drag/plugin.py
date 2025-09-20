@@ -48,7 +48,7 @@ class DragTask(Task):
     def __init__(self):
         self.running = True
 
-    async def execute(self, manager):
+    async def execute(self):
         while self.running:
             await asyncio.sleep(self.check_interval)
 
@@ -89,11 +89,11 @@ class Plugin(BasePlugin):
         self.pet.move(self.start_pos + delta)
         if not self.dragging:
             self.dragging = True
-            if cast(Config, self.config).trigger_event:
+            if cast(Config, self.get_config()).trigger_event:
                 self.trigger_event(DragStartEvent())
                 self.add_task(DragTask())
         else:
-            if cast(Config, self.config).trigger_event:
+            if cast(Config, self.get_config()).trigger_event:
                 self.trigger_event(DragEvent())
 
     def mouse_release(self, e: QMouseEvent):
@@ -102,6 +102,6 @@ class Plugin(BasePlugin):
             self.pet.move(self.start_pos + delta)
             self.press_pos = None
             self.dragging = False
-            if cast(Config, self.config).trigger_event:
+            if cast(Config, self.get_config()).trigger_event:
                 self.trigger_event(DragEndEvent())
 

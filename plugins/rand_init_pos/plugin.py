@@ -4,7 +4,6 @@ from PySide6.QtWidgets import QApplication
 
 
 class Plugin(BasePlugin):
-    name = "rand_init_pos"
     deps = [PetPluginProtocol]
 
     def init(self):

@@ -55,12 +55,11 @@ class ModifyPetStateEvent(Event):
 
 
 class Plugin(BasePlugin):
-
     def init(self): 
         self.state = PetState(mood=50, health=98, hunger=90)
 
     def prompts(self):
-        return {"json_fields": pathlib.Path(__file__).with_name("mood_field.md")}
+        return {"json_fields": self.root_dir() / "mood_field.md"}
 
     def infos(self):
         return {
@@ -114,6 +113,3 @@ class Plugin(BasePlugin):
         # return base_text + extra_text
         if len(extra_text):
             self.trigger_event(PlainEvent(extra_text))
-
-
-

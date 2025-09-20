@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from plugins.live2d_pet.plugin import Plugin as Live2dPetPlugin
 from plugins.expression.plugin import Plugin as ExpressionPlugin, ExpressionSetEvent
 from live2d.v3.live2d import LAppModel
-from typing import cast
+from typing import cast, Annotated
 
 @dataclass
 class Config(BaseConfig):
@@ -26,11 +26,11 @@ class Plugin(BasePlugin):
                         return
                     self.live2d_model = m
 
-                if exp := cast(Config, self.config).expression_map.get(
+                if exp := cast(Config, self.get_config()).expression_map.get(
                     expression, None
                 ):
                     self.live2d_model.SetExpression(exp)
-                elif exp := cast(Config, self.config).expression_map.get(
+                elif exp := cast(Config, self.get_config()).expression_map.get(
                     "normal", None
                 ):
                     self.live2d_model.SetExpression(exp)

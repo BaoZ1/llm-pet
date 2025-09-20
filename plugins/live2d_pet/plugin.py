@@ -2,10 +2,10 @@ from framework.plugin import BasePlugin, PetPluginProtocol
 from framework.config import BaseConfig
 from framework.window import TransparentWindow
 import pathlib
-from typing import cast
+from typing import cast, Annotated
 from dataclasses import dataclass
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
-from PySide6.QtWidgets import QVBoxLayout, QLayout
+from PySide6.QtWidgets import QVBoxLayout, QLayout, QFileDialog
 import live2d.v3 as live2d
 from OpenGL import GL
 
@@ -72,7 +72,7 @@ class Config(BaseConfig):
 class Plugin(BasePlugin, PetPluginProtocol):
     def init(self):
         self._pet = Live2dPet(
-            str((self.root_dir() / cast(Config, self.read_config()).model_json).absolute())
+            str((self.root_dir() / cast(Config, self.get_config()).model_json).absolute())
         )
         
         self._pet.show()

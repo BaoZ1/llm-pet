@@ -27,7 +27,7 @@ class Plugin(BasePlugin):
         self.clear_expression_timer: QTimer | None = None
 
     def prompts(self):
-        return {"json_fields": pathlib.Path(__file__).with_name("expression_field.md")}
+        return {"json_fields": self.root_dir() / "expression_field.md"}
 
     def infos(self):
         return {

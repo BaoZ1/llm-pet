@@ -1,27 +1,29 @@
 import asyncio
 import threading
-from typing import Callable, Coroutine
+from typing import Callable, Coroutine, ClassVar
 
 
 class ThreadedWorker:
-    def __init__(self):
-        self.loop = asyncio.new_event_loop()
-        self.thread = None
-        self._running = False
+    loop: ClassVar[asyncio.AbstractEventLoop]
+    thread: threading.Thread = None
 
-    def start(self):
-        if self._running:
-            return
+    @classmethod
+    def start(cls):
+        if cls.thread:
+            raise
+
+        cls.loop = asyncio.new_event_loop()
 
         def run():
-            asyncio.set_event_loop(self.loop)
-            self._running = True
-            self.loop.run_forever()
+            asyncio.set_event_loop(cls.loop)
+            cls._running = True
+            cls.loop.run_forever()
 
-        self.thread = threading.Thread(target=run, daemon=True)
-        self.thread.start()
+        cls.thread = threading.Thread(target=run, daemon=True)
+        cls.thread.start()
 
-    def submit_task(self, task: Callable, *args, **kwargs):
+    @classmethod
+    def submit_task(cls, task: Callable, *args, **kwargs):
         future = asyncio.Future()
 
         def handle_exception(e):
@@ -31,17 +33,17 @@ class ThreadedWorker:
             try:
                 result = task(*args, **kwargs)
                 if asyncio.iscoroutine(result):
-                    async_task = asyncio.run_coroutine_threadsafe(result, self.loop)
+                    async_task = asyncio.run_coroutine_threadsafe(result, cls.loop)
                     async_task.add_done_callback(lambda f: future.set_result(f.result()))
                 else:
                     future.set_result(result)
             except Exception as e:
-                self.loop.call_soon_threadsafe(handle_exception, e)
+                cls.loop.call_soon_threadsafe(handle_exception, e)
 
-        self.loop.call_soon_threadsafe(execute)
+        cls.loop.call_soon_threadsafe(execute)
         return future
 
-    def stop(self):
-        if self._running:
-            self.loop.call_soon_threadsafe(self.loop.stop)
-            self._running = False
+    @classmethod
+    def stop(cls):
+        if cls.loop:
+            cls.loop.call_soon_threadsafe(cls.loop.stop)

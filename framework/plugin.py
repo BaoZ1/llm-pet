@@ -6,6 +6,7 @@ from langchain_core.tools import tool
 from typing import (
     Any,
     ClassVar,
+    Self,
     Sequence,
     TYPE_CHECKING,
     Protocol,
@@ -16,11 +17,9 @@ import sys
 import inspect
 import yaml
 from .config import BaseConfig
-
-if TYPE_CHECKING:
-    from .agent import Task, Event, Agent, TaskManager
-    from .worker import ThreadedWorker
-    from PySide6.QtWidgets import QWidget
+from .worker import ThreadedWorker
+from .event import Task, Event, TaskManager
+from PySide6.QtWidgets import QWidget
 
 
 class PluginProtocol(Protocol):
@@ -44,14 +43,15 @@ class PetPluginProtocol(DisplayPluginProtocol, Protocol):
 
 class BasePlugin:
     deps: ClassVar[Sequence[type[BasePlugin] | type[PluginProtocol]]] = []
-
-    def __init__(self, manager: PluginManager):
-        self.manager = manager
-        self.config = self.read_config()
+    _config: ClassVar[BaseConfig] = None
 
     @classmethod
     def root_dir(cls):
         return pathlib.Path(inspect.getmodule(cls).__file__).parent
+    
+    @classmethod
+    def identifier(cls):
+        return "/".join(cls.__module__.split(".")[1:-1])
 
     @classmethod
     def config_type(cls) -> type[BaseConfig]:
@@ -64,23 +64,31 @@ class BasePlugin:
         return cls.config_type().__match_args__
 
     @classmethod
-    def read_config(cls):
+    def load_config(cls):
         config_file = cls.root_dir() / "config.yaml"
         if config_file.exists():
             config_dict = yaml.load(config_file.read_text("utf-8"), yaml.Loader)
         else:
             config_dict = {}
-        return cls.config_type()(**config_dict)
+        cls._config = cls.config_type()(**config_dict)
+    
+    @classmethod
+    def get_config(cls):
+        if cls._config is None:
+            cls.load_config()
+        return cls._config
 
-    def save_config(self):
-        config_file = self.root_dir() / "config.yaml"
+    @classmethod
+    def update_config(cls, config: BaseConfig):
+        config_file = cls.root_dir() / "config.yaml"
         config_file.write_text(
-            yaml.dump(self.config.__dict__, sort_keys=False), "utf-8"
+            yaml.dump(config.__dict__, sort_keys=False), "utf-8"
         )
+        cls._config = config
 
     def dep[T: BasePlugin | PluginProtocol](self, dep: type[T]) -> T:
         assert dep in self.deps
-        d = self.manager.get_plugins(dep)
+        d = PluginManager.get_plugins(dep)
         assert len(d) > 0
         return d[0]
 
@@ -103,10 +111,10 @@ class BasePlugin:
         pass
 
     def trigger_event(self, e: Event):
-        self.manager.worker.submit_task(self.manager.task_manager.trigger_event, e)
+        ThreadedWorker.submit_task(TaskManager.trigger_event, e)
 
     def add_task(self, t: Task):
-        self.manager.worker.submit_task(self.manager.task_manager.add_task, t)
+        ThreadedWorker.submit_task(TaskManager.add_task, t)
 
 
 class Tool:
@@ -127,18 +135,17 @@ class Tool:
 
 
 class PluginManager:
-    def __init__(
-        self,
-        agent: Agent,
-        task_manager: TaskManager,
-        worker: ThreadedWorker,
-    ):
-        self.agent = agent
-        self.task_manager = task_manager
-        self.worker = worker
+    plugin_classes: ClassVar[list[type[BasePlugin]]]
+    plugins: ClassVar[list[BasePlugin]]
 
-    def init(self):
-        plugin_class_list: list[type[BasePlugin]] = []
+    @classmethod
+    def init(cls):
+        cls.load_all_plugin_classes()
+        cls.plugins: list[BasePlugin] = []
+
+    @classmethod
+    def load_all_plugin_classes(cls):
+        plugin_classes: list[type[BasePlugin]] = []
         plugins_root = pathlib.Path("plugins")
         for import_file in plugins_root.rglob("plugin.py"):
             module_name = str(
@@ -154,33 +161,48 @@ class PluginManager:
             else:
                 module = sys.modules[module_name]
             plugin_class: type[BasePlugin] = getattr(module, "Plugin")
-            if plugin_class.read_config().enabled:
-                plugin_class_list.append(plugin_class)
+            plugin_classes.append(plugin_class)
 
+        ordered_plugin_classes: list[type[BasePlugin]] = []
         missing_deps: list[type[BasePlugin]] = []
-        self.plugins: list[BasePlugin] = []
-        for plugin_class in plugin_class_list:
+        for plugin_class in plugin_classes:
             if plugin_class.deps:
                 missing_deps.append(plugin_class)
             else:
-                p = plugin_class(self)
-                self.plugins.append(p)
+                ordered_plugin_classes.append(plugin_class)
         while missing_deps:
             new_mssing_deps: list[type[BasePlugin]] = []
             for plugin_class in missing_deps:
                 for dep in plugin_class.deps:
-                    if len(self.get_plugins(dep)) == 0:
+                    if all(
+                        filter(
+                            lambda c: not issubclass(c, dep),
+                            ordered_plugin_classes,
+                        )
+                    ):
                         new_mssing_deps.append(plugin_class)
                         break
                 if plugin_class not in new_mssing_deps:
-                    p = plugin_class(self)
-                    self.plugins.append(p)
+                    ordered_plugin_classes.append(plugin_class)
             if len(new_mssing_deps) == len(missing_deps):
-                raise Exception([p.deps for p in new_mssing_deps])
+                ordered_plugin_classes.extend(new_mssing_deps)
+                break
             missing_deps = new_mssing_deps
+        cls.plugin_classes = ordered_plugin_classes
 
+    @classmethod
+    def init_plugins(cls):
+        for plugin_class in cls.plugin_classes:
+            if plugin_class.get_config().enabled:
+                deps = []
+                for dep_class in plugin_class.deps:
+                    loaded_deps = cls.get_plugins(dep_class)
+                    if len(loaded_deps) == 0:
+                        raise Exception(dep_class)
+                    deps.append(loaded_deps[0])
+                cls.plugins.append(plugin_class())
         tools = []
-        for p in self.plugins:
+        for p in cls.plugins:
             p.init()
             tools.extend([f(p).langchain_wrap() for f in p.tools()])
 
@@ -193,7 +215,7 @@ class PluginManager:
             prompt_comps: dict[str, str] = json.load(d_f)
 
         plugin_prompt_comps: list[dict[str, str]] = []
-        for p in self.plugins:
+        for p in cls.plugins:
             str_prompts: dict[str, str] = {}
             for key, data in p.prompts().items():
                 if isinstance(data, str):
@@ -202,13 +224,14 @@ class PluginManager:
                     str_prompts[key] = data.read_text("utf-8")
             plugin_prompt_comps.append(str_prompts)
 
-        prompt_comps |= self.merge_str_dict(plugin_prompt_comps)
+        prompt_comps |= cls.merge_str_dict(plugin_prompt_comps)
         system_prompt = prompt_template.format_map(prompt_comps)
 
         return system_prompt, tools
 
+    @staticmethod
     def merge_str_dict(
-        self, dicts: Sequence[dict[Any, str]], sep: str = "\n"
+        dicts: Sequence[dict[Any, str]], sep: str = "\n"
     ) -> dict[Any, str]:
         result = {}
         for ps in dicts:
@@ -219,9 +242,10 @@ class PluginManager:
                     result[key] = value
         return result
 
-    def infos(self):
+    @classmethod
+    def infos(cls):
         raw_infos: dict[str, list[dict[str | None, Any]]] = {}
-        for p in self.plugins:
+        for p in cls.plugins:
             for title, infos in p.infos().items():
                 raw_infos.setdefault(title, []).append(infos)
         md_structured_infos: dict[str, str] = {}
@@ -242,17 +266,16 @@ class PluginManager:
         formated_infos = [f"[Info] {k}\n{v}" for k, v in md_structured_infos.items()]
         return formated_infos
 
-    def get_plugins(self, type: type[BasePlugin] | type[PluginProtocol]):
+    @classmethod
+    def get_plugins(cls, type: type[BasePlugin] | type[PluginProtocol]):
         return list(
             filter(
                 lambda p: isinstance(p, type),
-                self.plugins,
+                cls.plugins,
             )
         )
 
-    def on_event(self, e: Event):
-        for p in self.plugins:
+    @classmethod
+    def on_event(cls, e: Event):
+        for p in cls.plugins:
             p.on_event(e)
-
-    def base_model(self):
-        return self.agent.base_model

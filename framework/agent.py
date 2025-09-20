@@ -22,8 +22,7 @@ from dataclasses import dataclass
 import datetime
 import time
 from .event import Event, Task, TaskManager
-if TYPE_CHECKING:
-    from .plugin import PluginManager
+from .plugin import PluginManager
 
 class ChatCustom(ChatOpenAI):
     def _convert_chunk_to_generation_chunk(
@@ -101,9 +100,6 @@ class Agent:
             new_messages=[],
         )
 
-        self.task_manager: TaskManager
-        self.plugin_manager: PluginManager
-
         self.base_model = ChatCustom(
             base_url="https://api.moonshot.cn/v1",
             api_key=open("test_moonshot_key.txt").read(),
@@ -118,15 +114,13 @@ class Agent:
 
         self.message_queue = asyncio.Queue()
 
-    def init(self, system_prompt: str, tools: Sequence[BaseTool], task_manager: TaskManager, plugin_manager: PluginManager):
+    def init(self, system_prompt: str, tools: Sequence[BaseTool]):
         self.model = self.base_model.bind_tools(tools)
         self.decide_model_prompt = SystemMessage(system_prompt)
         self.graph = self.create_graph(tools)
-        self.task_manager = task_manager
-        self.plugin_manager = plugin_manager
 
     async def preprocess(self, state: State):
-        self.task_manager.trigger_event(InvokeStartEvent())
+        TaskManager.trigger_event(InvokeStartEvent())
 
         raw_messages: list[str] = ["Below are new messages"]
         while not self.message_queue.empty():
@@ -139,9 +133,9 @@ class Agent:
     async def set_info(self, state: State):
         info_parts: list[str] = []
 
-        info_parts.extend(self.plugin_manager.infos())
+        info_parts.extend(PluginManager.infos())
 
-        task_infos = self.task_manager.task_execute_infos()
+        task_infos = TaskManager.task_execute_infos()
         if task_infos:
             aggregate_task_info = "[Info] Running Tasks:\n"
             for task_info_line in task_infos:
@@ -173,7 +167,7 @@ class Agent:
             ]
         )
 
-        msg = await self.model.ainvoke(input_msgs, seed=time.time_ns())
+        msg: AIMessage = await self.model.ainvoke(input_msgs, seed=time.time_ns())
 
         return {"decide_result": json.loads(PREFIX + msg.content)}
 
@@ -190,10 +184,10 @@ class Agent:
         for k, v in state["decide_result"].items():
             if k in ("content", "tool"):
                 continue
-            self.task_manager.trigger_event(PluginFieldEvent(k, v))
+            TaskManager.trigger_event(PluginFieldEvent(k, v))
 
         if content := state["decide_result"].get("content", None):
-            self.task_manager.trigger_event(SpeakEvent(content))
+            TaskManager.trigger_event(SpeakEvent(content))
             return {"new_messages": [AIMessage(content)]}
 
     async def tool_check(self, state: State):
@@ -221,9 +215,9 @@ class Agent:
         print(msg)
         if msg.artifact:
             if isinstance(msg.artifact, Task):
-                await self.task_manager.add_task(msg.artifact)
+                await TaskManager.add_task(msg.artifact)
             elif isinstance(msg.artifact, Event):
-                self.task_manager.trigger_event(msg.artifact)
+                TaskManager.trigger_event(msg.artifact)
             if not self.message_queue.empty():
                 return {"new_messages": [HumanMessage(self.message_queue.get_nowait())]}
 
@@ -236,7 +230,7 @@ class Agent:
             if isinstance(msg, (AIMessage, ToolMessage)):
                 new_presistent_messages.append(msg)
 
-        self.task_manager.trigger_event(InvokeEndEvent())
+        TaskManager.trigger_event(InvokeEndEvent())
 
         return {
             "presistent_messages": new_presistent_messages,

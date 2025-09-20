@@ -9,36 +9,31 @@ from framework.worker import ThreadedWorker
 from framework.window import TestTray, EventBridge
 
 def main():
-    threaded_worker = ThreadedWorker()
-    threaded_worker.start()
+    ThreadedWorker.start()
 
     agent = Agent()
 
     app = QApplication([])
+    app.setQuitOnLastWindowClosed(False)
 
-    tm = TaskManager(agent)
-    pm = PluginManager(
-        agent,
-        tm,
-        threaded_worker,
-    )
+    PluginManager.init()
 
     bridge = EventBridge()
-    tm.register_callback("bridge", bridge.event_recived.emit)
-    bridge.event_recived.connect(pm.on_event)
+    TaskManager.register_callback("bridge", bridge.event_recived.emit)
+    bridge.event_recived.connect(PluginManager.on_event)
 
-    sys_prompt, tools = pm.init()
-    agent.init(sys_prompt, tools, tm, pm)
+    sys_prompt, tools = PluginManager.init_plugins()
+    agent.init(sys_prompt, tools)
 
-    tm.register_callback("agent", agent.on_event)
+    TaskManager.register_callback("agent", agent.on_event)
 
-    threaded_worker.submit_task(agent.run)
-        
+    ThreadedWorker.submit_task(agent.run)
+
     TestTray.init()
 
     app.exec()
 
-    threaded_worker.stop()
+    ThreadedWorker.stop()
 
 
 if __name__ == "__main__":

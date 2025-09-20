@@ -67,7 +67,6 @@ class TextBubble(TransparentWindow):
 
 
 class Plugin(BasePlugin):
-    name = "text_bubble"
     deps = [PetPluginProtocol]
 
     def init(self):
@@ -79,8 +78,6 @@ class Plugin(BasePlugin):
             [BubbleDirection.Top, BubbleDirection.Center],
             [BubbleOverflowAction.Flip, BubbleOverflowAction.Shift],
         )
-
-
 
     def on_event(self, e):
         match e:

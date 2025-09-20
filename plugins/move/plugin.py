@@ -1,5 +1,5 @@
 from framework.plugin import BasePlugin, PetPluginProtocol
-from framework.event import Event, Task
+from framework.event import Event, Task, TaskManager
 from framework.agent import PluginFieldEvent
 import asyncio
 from dataclasses import dataclass
@@ -48,7 +48,7 @@ class MoveTask(Task):
         if "move" in event.tags and "user" in event.tags:
             self.running = False
 
-    async def execute(self, manager):
+    async def execute(self):
         dx = self.target[0] - self.init_pos[0]
         dy = self.target[1] - self.init_pos[1]
         distance = math.hypot(dx, dy)
@@ -61,10 +61,10 @@ class MoveTask(Task):
                 int(self.init_pos[0] + dx * i / step_count),
                 int(self.init_pos[1] + dy * i / step_count),
             )
-            manager.trigger_event(MoveEvent(new_pos, False))
+            TaskManager.trigger_event(MoveEvent(new_pos, False))
             await asyncio.sleep(self.interval)
             self.progress = (step_count, i)
-        manager.trigger_event(MoveEvent(new_pos, True))
+        TaskManager.trigger_event(MoveEvent(new_pos, True))
         self.progress = (step_count, step_count)
 
     def execute_info(self):

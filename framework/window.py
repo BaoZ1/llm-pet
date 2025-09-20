@@ -1,6 +1,22 @@
 from __future__ import annotations
-from PySide6.QtCore import Qt, Signal, QPoint, QRect, QObject, SignalInstance
-from PySide6.QtGui import QMoveEvent, QResizeEvent, QShowEvent, QIcon, QPixmap, QAction
+from PySide6.QtCore import (
+    Qt,
+    Signal,
+    QPoint,
+    QRect,
+    QObject,
+    SignalInstance,
+    QPropertyAnimation,
+)
+from PySide6.QtGui import (
+    QMoveEvent,
+    QResizeEvent,
+    QShowEvent,
+    QIcon,
+    QPixmap,
+    QAction,
+    QCursor,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QWidget,
@@ -16,15 +32,35 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QSpinBox,
     QPushButton,
+    QToolButton,
+    QScrollArea,
+    QSizePolicy,
+    QFileDialog,
+    QStyle,
+    QGroupBox,
 )
-from typing import Sequence, cast, get_args, get_origin, _TypedDict, is_typeddict
+from typing import (
+    Callable,
+    Self,
+    Sequence,
+    cast,
+    get_args,
+    get_origin,
+    _TypedDict,
+    is_typeddict,
+    ClassVar,
+    Annotated,
+)
 from types import UnionType, NoneType
 from enum import Enum, auto
 from .agent import Event
-from .plugin import BasePlugin
+from .config import BaseConfig
+from .plugin import BasePlugin, PluginManager
 from dataclasses import fields
 from pathlib import Path
-
+import sys
+import os
+from functools import partial
 
 class TransparentWindow(QWidget):
     def __init__(self):
@@ -234,21 +270,38 @@ class EventBridge(QObject):
         self.moveToThread(QApplication.instance().thread())
 
 
-TYPE_FIELD_EDITS: dict[type, type[TypeFieldEdit]] = {}
-
-
 class TypeFieldEdit[T]:
+    edits: ClassVar[dict[type, type[TypeFieldEdit]]] = {}
+
     changed: SignalInstance
 
     def __init_subclass__(cls):
         for b in cls.__orig_bases__:
             if get_origin(b) is TypeFieldEdit:
                 t = get_args(b)[0]
-                TYPE_FIELD_EDITS[get_origin(t) or t] = cls
+                TypeFieldEdit.edits[get_origin(t) or t] = cls
                 return
 
-    def with_type(self, t: type[T]):
+    @staticmethod
+    def create[E](t: type[E]) -> TypeFieldEdit[E]:
+        comment, extra_args = "", ()
+        if get_origin(t) is Annotated:
+            t, comment, *extra_args = get_args(t)
+        idx_t = get_origin(t) or t
+        if idx_t not in TypeFieldEdit.edits:
+            if is_typeddict(idx_t):
+                return TypeFieldEdit.edits[_TypedDict]().with_type(
+                    t, comment, extra_args
+                )
+            elif issubclass(idx_t, Path):
+                return TypeFieldEdit.edits[Path]().with_type(t, comment, extra_args)
+            raise Exception(t)
+        return TypeFieldEdit.edits[idx_t]().with_type(t, comment, extra_args)
+
+    def with_type(self, t: type[T], comment: str, extra_args: tuple):
         self.t = t
+        self.comment = comment
+        self.extra_args = extra_args
         self.init()
         return self
 
@@ -260,15 +313,6 @@ class TypeFieldEdit[T]:
 
     def get_value(self) -> T:
         raise
-
-
-def create_type_edit[T](t: type[T]) -> TypeFieldEdit[T]:
-    idx_t = get_origin(t) or t
-    if idx_t not in TYPE_FIELD_EDITS:
-        if is_typeddict(idx_t):
-            return TYPE_FIELD_EDITS[_TypedDict]().with_type(t)
-        raise Exception(t)
-    return TYPE_FIELD_EDITS[idx_t]().with_type(t)
 
 
 class BoolFieldEdit(QPushButton, TypeFieldEdit[bool]):
@@ -306,12 +350,47 @@ class IntFieldEdit(QSpinBox, TypeFieldEdit[int]):
 
     def init(self):
         self.valueChanged.connect(lambda _: self.changed.emit())
+        if self.extra_args:
+            self.setRange(*self.extra_args)
 
     def set_value(self, value):
         self.setValue(value)
 
     def get_value(self):
         return self.value()
+
+
+class PathFieldEdit(QWidget, TypeFieldEdit[Path]):
+    changed = Signal()
+
+    def init(self):
+        layout = QHBoxLayout()
+
+        self.line_edit = QLineEdit()
+        layout.addWidget(self.line_edit)
+
+        self.btn = QPushButton()
+        layout.addWidget(self.btn)
+
+        self.setLayout(layout)
+
+        self.btn.clicked.connect(self.open_explorer)
+        self.line_edit.textChanged.connect(lambda _: self.changed.emit())
+
+    def open_explorer(self):
+        dialog = QFileDialog(self)
+        for arg in self.extra_args:
+            if isinstance(arg, QFileDialog.FileMode):
+                dialog.setFileMode(arg)
+        if dialog.exec():
+            p = dialog.selectedFiles()[0]
+            self.line_edit.setText(str(Path(p).absolute()))
+
+    def get_value(self):
+        return Path(self.line_edit.text())
+
+    def set_value(self, value):
+        self.line_edit.setText(str(value.absolute()))
 
 
 class NoneFieldEdit(QWidget, TypeFieldEdit[NoneType]):
@@ -396,7 +475,7 @@ class ListFieldEdit(QWidget, TypeFieldEdit[list]):
     def insert(self, idx: int):
         layout = cast(QVBoxLayout, self.layout())
 
-        widget = create_type_edit(get_args(self.t)[0])
+        widget = TypeFieldEdit.create(get_args(self.t)[0])
         wrapped_widget = ListFieldEditItem(widget)
         layout.insertWidget(idx, wrapped_widget)
 
@@ -472,8 +551,8 @@ class DictFieldEdit(QWidget, TypeFieldEdit[dict]):
         layout = cast(QVBoxLayout, self.layout())
 
         kt, vt = get_args(self.t)
-        k_widget = create_type_edit(kt)
-        v_widget = create_type_edit(vt)
+        k_widget = TypeFieldEdit.create(kt)
+        v_widget = TypeFieldEdit.create(vt)
         wrapped_widget = DictFieldEditItem(k_widget, v_widget)
         layout.insertWidget(idx, wrapped_widget)
 
@@ -510,7 +589,7 @@ class TypedDictFieldEdit(QWidget, TypeFieldEdit[_TypedDict]):
             name_label = QLabel(k)
             field_layout.addWidget(name_label)
 
-            field_edit = create_type_edit(t)
+            field_edit = TypeFieldEdit.create(t)
             field_layout.addWidget(field_edit)
 
             layout.addLayout(field_layout)
@@ -578,7 +657,7 @@ class UnionFieldEdit(QWidget, TypeFieldEdit[UnionType]):
 
         self.editors: dict[type, TypeFieldEdit] = {}
         for t in self.field_types:
-            editor = create_type_edit(t)
+            editor = TypeFieldEdit.create(t)
             self.type_selector.addItem(self.type_name(t))
             self.field_input.addWidget(editor)
             self.editors[t] = editor
@@ -608,49 +687,217 @@ class UnionFieldEdit(QWidget, TypeFieldEdit[UnionType]):
         return ty.__name__
 
 
-class PluginConfigWidget(QWidget):
-    def __init__(self, plugin_class: type[BasePlugin]):
+class ConfigEdit(QWidget):
+    changed = Signal()
+
+    def __init__(self, config_class: type[BaseConfig]):
         super().__init__()
 
-        self.plugin_class = plugin_class
-        self.config_class = plugin_class.config_type()
+        self.config_class = config_class
 
         layout = QVBoxLayout()
         layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetFixedSize)
 
+        self.edits: dict[str, TypeFieldEdit] = {}
         for field in fields(self.config_class):
             field_layout = QHBoxLayout()
 
+            name_layout = QVBoxLayout()
+            name_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
             name_label = QLabel(field.name)
-            field_layout.addWidget(name_label)
+            name_layout.addWidget(name_label)
+            field_layout.addLayout(name_layout)
 
-            field_edit = create_type_edit(field.type)
+            field_edit = TypeFieldEdit.create(field.type)
+            cast(QWidget, field_edit).setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+            )
+            self.edits[field.name] = field_edit
             field_layout.addWidget(field_edit)
+
+            if field_edit.comment:
+                comment_label = QLabel(field_edit.comment)
+                name_layout.addWidget(comment_label)
+            field_edit.changed.connect(self.changed.emit)
 
             layout.addLayout(field_layout)
 
         self.setLayout(layout)
 
-    def load(self):
-        config = self.plugin_class.read_config()
-        for i, field in enumerate(fields(self.config_class)):
-            cast(
-                TypeFieldEdit,
-                self.layout().itemAt(i).layout().itemAt(1).widget(),
-            ).set_value(getattr(config, field.name))
+    def load(self, config: BaseConfig):
+        self.blockSignals(True)
+        for field in fields(self.config_class):
+            self.edits[field.name].set_value(getattr(config, field.name))
+        self.blockSignals(False)
 
-    def get_config(self):
+    def get(self):
         d = {}
-        for i, field in enumerate(fields(self.config_class)):
-            d[field.name] = cast(
-                TypeFieldEdit,
-                self.layout().itemAt(i).layout().itemAt(1).widget(),
-            ).get_value()
+        for field in fields(self.config_class):
+            d[field.name] = self.edits[field.name].get_value()
         return self.config_class(**d)
 
 
+class DynamicScrollArea(QScrollArea):
+    def sizeHint(self):
+        if w := self.widget():
+            return w.sizeHint()
+        return super().sizeHint()
+
+
+class CollapsibleWidget(QWidget):
+    expanded = Signal(QWidget)
+
+    def __init__(self, title: str, body: QWidget):
+        super().__init__()
+
+        self.body = body
+
+        layout = QVBoxLayout()
+        # layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetMinimumSize)
+
+        self.title_widget = QToolButton(autoRaise=True)
+        self.title_widget.setText(title)
+        self.title_widget.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self.title_widget.setArrowType(Qt.ArrowType.RightArrow)
+        self.title_widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        layout.addWidget(self.title_widget)
+
+        self.body_area = DynamicScrollArea()
+        self.body_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.body_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.body_area.setSizePolicy(
+            QSizePolicy.Policy.MinimumExpanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        self.body_area.setMinimumHeight(0)
+        self.body_area.setMaximumHeight(0)
+        self.body_area.setWidget(body)
+        layout.addWidget(self.body_area)
+
+        self.setLayout(layout)
+
+        self.expand = False
+        self.title_widget.clicked.connect(self.toggle)
+        self.animation = QPropertyAnimation(self.body_area, "maximumHeight".encode())
+        self.animation.setDuration(100)
+
+    def toggle(self):
+        self.expand = not self.expand
+
+        if self.expand:
+            self.title_widget.setArrowType(Qt.ArrowType.DownArrow)
+            body_height = self.body.sizeHint().height()
+            self.animation.setStartValue(0)
+            self.animation.setEndValue(min(body_height, 400))
+            self.expanded.emit(self)
+        else:
+            self.title_widget.setArrowType(Qt.ArrowType.RightArrow)
+            self.animation.setStartValue(self.body_area.height())
+            self.animation.setEndValue(0)
+        self.animation.start()
+        
+    def sizeHint(self):
+        hint = super().sizeHint()
+        hint.setWidth(max(hint.width(), self.body.width()))
+        return hint
+
+class PluginConfigWindow(QWidget):
+    instance: Self | None = None
+
+    @classmethod
+    def open(cls):
+        if cls.instance is None:
+            cls.instance = PluginConfigWindow()
+        if cls.instance.isMinimized():
+            cls.instance.showNormal()
+        else:
+            cls.instance.show()
+        cls.instance.raise_()
+
+    def __init__(self):
+        super().__init__()
+        layout = QVBoxLayout()
+
+        config_list_area = DynamicScrollArea()
+        config_list_area.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        config_list_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        config_list_area.setSizePolicy(
+            QSizePolicy.Policy.MinimumExpanding,
+            QSizePolicy.Policy.Maximum,
+        )
+        config_list_area.setStyleSheet(
+            """
+            QScrollArea {
+                border: none;
+            }
+        """
+        )
+        layout.addWidget(config_list_area)
+
+        self.config_widgets: dict[type[BasePlugin], CollapsibleWidget] = {}
+        config_content = QWidget()
+        config_content.setSizePolicy(
+            QSizePolicy.Policy.MinimumExpanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        config_content_layout = QVBoxLayout()
+        config_content_layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetFixedSize)
+        for plugin_class in PluginManager.plugin_classes:
+            title = plugin_class.identifier()
+            config_widget = ConfigEdit(plugin_class.config_type())
+            config_widget.setSizePolicy(
+                QSizePolicy.Policy.MinimumExpanding,
+                QSizePolicy.Policy.Fixed,
+            )
+            config_widget.changed.connect(
+                partial(self.save_config, plugin_class, config_widget.get)
+            )
+            wrapped_widget = CollapsibleWidget(title, config_widget)
+            wrapped_widget.setSizePolicy(
+                QSizePolicy.Policy.MinimumExpanding,
+                QSizePolicy.Policy.Fixed,
+            )
+            config_content_layout.addWidget(wrapped_widget)
+            self.config_widgets[plugin_class] = wrapped_widget
+            wrapped_widget.expanded.connect(self.close_others)
+        config_content.setLayout(config_content_layout)
+        self.c = config_content
+        config_list_area.setWidget(config_content)
+        self.a = config_list_area
+        self.setLayout(layout)
+
+    def mousePressEvent(self, event):
+        for i in range(self.c.layout().count()):
+            print(self.c.layout().itemAt(i).widget().sizeHint())
+        print("===================================")
+        print(self.c.sizeHint(), self.c.layout().sizeHint())
+
+    def close_others(self, open_widget: CollapsibleWidget):
+        for w in self.config_widgets.values():
+            if w is not open_widget and w.expand:
+                w.toggle()
+
+    def showEvent(self, event):
+        for plugin_class, config_widget in self.config_widgets.items():
+            cast(ConfigEdit, config_widget.body).load(plugin_class.get_config())
+
+    def save_config(self, plugin_class: type[BasePlugin], getter: Callable):
+        plugin_class.update_config(getter())
+
+
 class TestTray(QWidget):
-    instance: TestTray | None = None
+    instance: Self | None = None
 
     @staticmethod
     def init():
@@ -672,40 +919,30 @@ class TestTray(QWidget):
 
         self.create_tray_menu()
 
-        self.tray_icon.activated.connect(self.on_tray_activated)
+        self.tray_icon.activated.connect(
+            lambda _: self.tray_icon.contextMenu().popup(QCursor.pos())
+        )
 
         self.tray_icon.show()
 
     def create_tray_menu(self):
         menu = QMenu()
 
-        settings_action = QAction("设置", self)
-        settings_action.triggered.connect(self.show_settings)
-        menu.addAction(settings_action)
+        config_action = QAction("Config", self)
+        config_action.triggered.connect(PluginConfigWindow.open)
+        menu.addAction(config_action)
 
         menu.addSeparator()
 
-        exit_action = QAction("退出", self)
-        exit_action.triggered.connect(self.quit_application)
-        menu.addAction(exit_action)
+        quit_action = QAction("Quit", self)
+        quit_action.triggered.connect(QApplication.quit)
+        menu.addAction(quit_action)
+
+        restart_action = QAction("Restart", self)
+        restart_action.triggered.connect(self.tray_icon.hide)
+        restart_action.triggered.connect(
+            lambda: os.execl(sys.executable, sys.executable, *sys.argv)
+        )
+        menu.addAction(restart_action)
 
         self.tray_icon.setContextMenu(menu)
-
-    def on_tray_activated(self, reason):
-        if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            self.show_notification()
-
-    def show_settings(self):
-        QMessageBox.information(self, "设置", "这里是设置界面")
-
-    def show_notification(self):
-        self.tray_icon.showMessage(
-            "应用程序通知",
-            "应用程序正在后台运行",
-            QSystemTrayIcon.MessageIcon.Information,
-            2000,
-        )
-
-    def quit_application(self):
-        self.tray_icon.hide()
-        QApplication.quit()
