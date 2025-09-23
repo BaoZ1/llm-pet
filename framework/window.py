@@ -55,12 +55,13 @@ from types import UnionType, NoneType
 from enum import Enum, auto
 from .agent import Event
 from .config import BaseConfig
-from .plugin import BasePlugin, PluginManager
+from .plugin import BasePlugin, PluginManager, PluginProtocol
 from dataclasses import fields
 from pathlib import Path
 import sys
 import os
 from functools import partial
+
 
 class TransparentWindow(QWidget):
     def __init__(self):
@@ -689,6 +690,7 @@ class UnionFieldEdit(QWidget, TypeFieldEdit[UnionType]):
 
 class ConfigEdit(QWidget):
     changed = Signal()
+    enable_changed = Signal()
 
     def __init__(self, config_class: type[BaseConfig]):
         super().__init__()
@@ -719,6 +721,8 @@ class ConfigEdit(QWidget):
                 comment_label = QLabel(field_edit.comment)
                 name_layout.addWidget(comment_label)
             field_edit.changed.connect(self.changed.emit)
+            if field.name == "enabled":
+                field_edit.changed.connect(self.enable_changed.emit)
 
             layout.addLayout(field_layout)
 
@@ -744,19 +748,19 @@ class DynamicScrollArea(QScrollArea):
         return super().sizeHint()
 
 
-class CollapsibleWidget(QWidget):
+class SinglePluginCollapsibleWidget(QWidget):
     expanded = Signal(QWidget)
 
-    def __init__(self, title: str, body: QWidget):
+    def __init__(self, plugin_class: type[BasePlugin]):
         super().__init__()
 
-        self.body = body
+        self.plugin_class = plugin_class
 
         layout = QVBoxLayout()
         # layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetMinimumSize)
 
         self.title_widget = QToolButton(autoRaise=True)
-        self.title_widget.setText(title)
+        self.title_widget.setText(plugin_class.identifier())
         self.title_widget.setToolButtonStyle(
             Qt.ToolButtonStyle.ToolButtonTextBesideIcon
         )
@@ -767,25 +771,52 @@ class CollapsibleWidget(QWidget):
         )
         layout.addWidget(self.title_widget)
 
-        self.body_area = DynamicScrollArea()
-        self.body_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.body_area.setHorizontalScrollBarPolicy(
+        self.config_area = DynamicScrollArea()
+        self.config_area.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
-        self.body_area.setSizePolicy(
+        self.config_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.config_area.setSizePolicy(
             QSizePolicy.Policy.MinimumExpanding,
             QSizePolicy.Policy.Fixed,
         )
-        self.body_area.setMinimumHeight(0)
-        self.body_area.setMaximumHeight(0)
-        self.body_area.setWidget(body)
-        layout.addWidget(self.body_area)
+        self.config_area.setMinimumHeight(0)
+        self.config_area.setMaximumHeight(0)
+
+        scroll_content_widget = QWidget()
+        scroll_layout = QVBoxLayout()
+        scroll_layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetMinimumSize)
+
+        self.deps_hint_label = QLabel()
+        self.deps_hint_label.setSizePolicy(
+            QSizePolicy.Policy.MinimumExpanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        scroll_layout.addWidget(self.deps_hint_label)
+
+        self.config_widget = ConfigEdit(plugin_class.config_type())
+        self.config_widget.setSizePolicy(
+            QSizePolicy.Policy.MinimumExpanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        self.config_widget.changed.connect(
+            lambda: plugin_class.update_config(self.config_widget.get())
+        )
+        self.config_widget.enable_changed.connect(self.refresh_display)
+        scroll_layout.addWidget(self.config_widget)
+
+        scroll_content_widget.setLayout(scroll_layout)
+
+        self.config_area.setWidget(scroll_content_widget)
+        layout.addWidget(self.config_area)
 
         self.setLayout(layout)
 
         self.expand = False
         self.title_widget.clicked.connect(self.toggle)
-        self.animation = QPropertyAnimation(self.body_area, "maximumHeight".encode())
+        self.animation = QPropertyAnimation(self.config_area, "maximumHeight".encode())
         self.animation.setDuration(100)
 
     def toggle(self):
@@ -793,20 +824,64 @@ class CollapsibleWidget(QWidget):
 
         if self.expand:
             self.title_widget.setArrowType(Qt.ArrowType.DownArrow)
-            body_height = self.body.sizeHint().height()
+            body_height = self.config_area.sizeHint().height()
             self.animation.setStartValue(0)
             self.animation.setEndValue(min(body_height, 400))
             self.expanded.emit(self)
         else:
             self.title_widget.setArrowType(Qt.ArrowType.RightArrow)
-            self.animation.setStartValue(self.body_area.height())
+            self.animation.setStartValue(self.config_area.height())
             self.animation.setEndValue(0)
         self.animation.start()
+
+    def refresh_display(self):
+        title_text_color: str
+        if self.plugin_class.get_config().enabled:
+            for dep in self.plugin_class.deps:
+                all_deps = PluginManager.get_plugin_classes(dep)
+                if len(all_deps) == 0 or all(
+                    not d.get_config().enabled for d in all_deps
+                ):
+                    title_text_color = "red"
+                    break
+            else:
+                title_text_color = "black"
+        else:
+            title_text_color = "gray"
+        self.title_widget.setStyleSheet(
+            f"""
+                QToolButton {{
+                    color: {title_text_color};
+                }}
+            """
+        )
         
-    def sizeHint(self):
-        hint = super().sizeHint()
-        hint.setWidth(max(hint.width(), self.body.width()))
-        return hint
+        if len(self.plugin_class.deps) == 0:
+            self.deps_hint_label.setText("deps: None")
+        else:
+            dep_names = []
+            for dep in self.plugin_class.deps:
+                if issubclass(dep, BasePlugin):
+                    name = dep.identifier()
+                    if not dep.get_config().enabled:
+                        name = f'<span style="color: red;">{name}</span>'
+                elif issubclass(dep, PluginProtocol):
+                    dep_classes = PluginManager.get_plugin_classes(dep)
+                    enabled_classes = [c for c in dep_classes if c.get_config().enabled]
+                    if len(enabled_classes) == 0:
+                        name = f'<span style="color: red;">{dep.__name__}</span>'
+                    else:
+                        class_names = ", ".join(c.identifier() for c in enabled_classes)
+                        name = f"{dep.__name__}({class_names})"
+                dep_names.append(name)
+
+            self.deps_hint_label.setText("deps: " + ", ".join(dep_names))
+            self.deps_hint_label.setTextFormat(Qt.TextFormat.RichText)
+
+    def load(self, config: BaseConfig):
+        self.config_widget.load(config)
+        self.refresh_display()
+
 
 class PluginConfigWindow(QWidget):
     instance: Self | None = None
@@ -845,7 +920,7 @@ class PluginConfigWindow(QWidget):
         )
         layout.addWidget(config_list_area)
 
-        self.config_widgets: dict[type[BasePlugin], CollapsibleWidget] = {}
+        self.config_widgets: dict[type[BasePlugin], SinglePluginCollapsibleWidget] = {}
         config_content = QWidget()
         config_content.setSizePolicy(
             QSizePolicy.Policy.MinimumExpanding,
@@ -854,22 +929,14 @@ class PluginConfigWindow(QWidget):
         config_content_layout = QVBoxLayout()
         config_content_layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetFixedSize)
         for plugin_class in PluginManager.plugin_classes:
-            title = plugin_class.identifier()
-            config_widget = ConfigEdit(plugin_class.config_type())
-            config_widget.setSizePolicy(
-                QSizePolicy.Policy.MinimumExpanding,
-                QSizePolicy.Policy.Fixed,
-            )
-            config_widget.changed.connect(
-                partial(self.save_config, plugin_class, config_widget.get)
-            )
-            wrapped_widget = CollapsibleWidget(title, config_widget)
+            wrapped_widget = SinglePluginCollapsibleWidget(plugin_class)
             wrapped_widget.setSizePolicy(
                 QSizePolicy.Policy.MinimumExpanding,
                 QSizePolicy.Policy.Fixed,
             )
             config_content_layout.addWidget(wrapped_widget)
             self.config_widgets[plugin_class] = wrapped_widget
+            wrapped_widget.config_widget.enable_changed.connect(self.refresh_display)
             wrapped_widget.expanded.connect(self.close_others)
         config_content.setLayout(config_content_layout)
         self.c = config_content
@@ -877,23 +944,20 @@ class PluginConfigWindow(QWidget):
         self.a = config_list_area
         self.setLayout(layout)
 
-    def mousePressEvent(self, event):
-        for i in range(self.c.layout().count()):
-            print(self.c.layout().itemAt(i).widget().sizeHint())
-        print("===================================")
-        print(self.c.sizeHint(), self.c.layout().sizeHint())
+    def refresh_display(self):
+        for w in self.config_widgets.values():
+            w.refresh_display()
 
-    def close_others(self, open_widget: CollapsibleWidget):
+    def close_others(self, open_widget: SinglePluginCollapsibleWidget):
         for w in self.config_widgets.values():
             if w is not open_widget and w.expand:
                 w.toggle()
 
     def showEvent(self, event):
         for plugin_class, config_widget in self.config_widgets.items():
-            cast(ConfigEdit, config_widget.body).load(plugin_class.get_config())
-
-    def save_config(self, plugin_class: type[BasePlugin], getter: Callable):
-        plugin_class.update_config(getter())
+            cast(SinglePluginCollapsibleWidget, config_widget).load(
+                plugin_class.get_config()
+            )
 
 
 class TestTray(QWidget):

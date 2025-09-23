@@ -1,7 +1,7 @@
 from typing import cast
 from framework.plugin import BasePlugin, PetPluginProtocol
 from framework.config import BaseConfig
-from framework.agent import Event, Task
+from framework.event import Event, Task
 from dataclasses import dataclass
 import asyncio
 from PySide6.QtCore import Qt, QObject, QEvent, QPoint, Signal

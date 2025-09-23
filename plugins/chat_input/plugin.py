@@ -1,5 +1,6 @@
 from framework.plugin import BasePlugin, PetPluginProtocol
 from framework.event import Event
+from framework.agent import UserMessage
 from framework.window import (
     TransparentWindow,
     set_bubble,
@@ -89,17 +90,13 @@ class InputBubble(TransparentWindow):
 @dataclass
 class UserInputEvent(Event):
     tags = ["user"]
-    msg_prefix = "User Input"
-
     content: str
 
     def agent_msg(self):
-        return self.content
-
+        return UserMessage(self.content)
 
 
 class Plugin(BasePlugin):
-    name = "base_chat"
     deps = [PetPluginProtocol]
 
     def init(self):

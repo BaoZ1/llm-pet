@@ -1,6 +1,5 @@
 from framework.plugin import BasePlugin, PetPluginProtocol
-from framework.event import Event, Task, TaskManager
-from framework.agent import PluginFieldEvent
+from framework.event import PluginFieldEvent, Event, Task, TaskManager
 import asyncio
 from dataclasses import dataclass
 import math
@@ -72,7 +71,6 @@ class MoveTask(Task):
 
 
 class Plugin(BasePlugin):
-    name = "move"
     deps = [PetPluginProtocol]
 
     def init(self):

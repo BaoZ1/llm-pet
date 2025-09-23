@@ -92,6 +92,9 @@ class Plugin(BasePlugin):
         )
 
     def modify_state(self, name: str, delta: int):
+        if delta == 0:
+            return
+        
         prev_desc = self.state_desc(name)
         self.state[name] = self.state_modify_check(
             name, self.state[name] + delta
@@ -102,8 +105,6 @@ class Plugin(BasePlugin):
             base_text = f'Your "{name}" state value increased.'
         elif delta < 0:
             base_text = f'Your "{name}" state value decreased.'
-        else:
-            raise
 
         if new_desc != prev_desc:
             extra_text = f'Your "{name}" state changes from "{prev_desc}" to "{new_desc}"'

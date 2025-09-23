@@ -1,6 +1,16 @@
 from __future__ import annotations
 import json
-from typing import Any, Never, Self, TypedDict, Annotated, ClassVar, Callable, Sequence, TYPE_CHECKING
+from typing import (
+    Any,
+    Never,
+    Self,
+    TypedDict,
+    Annotated,
+    ClassVar,
+    Callable,
+    Sequence,
+    TYPE_CHECKING,
+)
 from abc import ABC, abstractmethod
 from langchain_openai import ChatOpenAI
 from langchain_core.runnables import Runnable
@@ -21,8 +31,15 @@ import asyncio
 from dataclasses import dataclass
 import datetime
 import time
-from .event import Event, Task, TaskManager
+from .event import (
+    Event,
+    TaskManager,
+    InvokeStartEvent,
+    InvokeEndEvent,
+    PluginFieldEvent,
+)
 from .plugin import PluginManager
+
 
 class ChatCustom(ChatOpenAI):
     def _convert_chunk_to_generation_chunk(
@@ -65,30 +82,33 @@ class State(TypedDict):
     decide_result: dict
 
 
-# class StdinReadTask(Task):
-
-#     async def execute(self, manager, state):
-#         loop = asyncio.get_running_loop()
-#         while True:
-#             user_input = await loop.run_in_executor(None, input)
-#             manager.trigger_event(UserInputEvent(user_input))
+class UserMessage(HumanMessage):
+    def __init__(self, content: str):
+        super().__init__(f"[User Input] {content}")
 
 
-class InvokeStartEvent(Event):
-    pass
+class EventMessage(HumanMessage):
+    def __init__(self, content: str):
+        super().__init__(f"[Event] {content}")
 
 
-class InvokeEndEvent(Event):
-    pass
+class InfoMessage(HumanMessage):
+    def __init__(self):
+        info_parts: list[str] = []
 
-@dataclass
-class PluginFieldEvent(Event):
-    key: str
-    value: Any
+        info_parts.extend(PluginManager.infos())
 
-@dataclass
-class SpeakEvent(Event):
-    content: str
+        task_infos = TaskManager.task_execute_infos()
+        if task_infos:
+            aggregate_task_info = "[Info] Running Tasks:\n"
+            for task_info_line in task_infos:
+                aggregate_task_info += f"- {task_info_line}\n"
+            info_parts.append(aggregate_task_info)
+
+        info_msg = "\n\n".join(info_parts).strip()
+        if len(info_msg) == 0:
+            info_msg = "[Info] No Information now."
+        super().__init__(f"[Info] {info_msg}")
 
 
 class Agent:
@@ -110,9 +130,10 @@ class Agent:
         self.model: Runnable
         self.decide_model_prompt: SystemMessage
 
-        self.graph : CompiledStateGraph
+        self.graph: CompiledStateGraph
 
         self.message_queue = asyncio.Queue()
+        self.should_invoke: bool = False
 
     def init(self, system_prompt: str, tools: Sequence[BaseTool]):
         self.model = self.base_model.bind_tools(tools)
@@ -122,78 +143,80 @@ class Agent:
     async def preprocess(self, state: State):
         TaskManager.trigger_event(InvokeStartEvent())
 
-        raw_messages: list[str] = ["Below are new messages"]
+        messages: list[HumanMessage] = [HumanMessage("[System] Below are new messages")]
         while not self.message_queue.empty():
-            raw_messages.append(self.message_queue.get_nowait())
+            messages.append(self.message_queue.get_nowait())
+        self.should_invoke = False
 
         return {
-            "input_messages": [HumanMessage(msg) for msg in raw_messages],
+            "input_messages": messages,
         }
 
     async def set_info(self, state: State):
-        info_parts: list[str] = []
+        # info_parts: list[str] = []
 
-        info_parts.extend(PluginManager.infos())
+        # info_parts.extend(PluginManager.infos())
 
-        task_infos = TaskManager.task_execute_infos()
-        if task_infos:
-            aggregate_task_info = "[Info] Running Tasks:\n"
-            for task_info_line in task_infos:
-                aggregate_task_info += f"- {task_info_line}\n"
-            info_parts.append(aggregate_task_info)
+        # task_infos = TaskManager.task_execute_infos()
+        # if task_infos:
+        #     aggregate_task_info = "[Info] Running Tasks:\n"
+        #     for task_info_line in task_infos:
+        #         aggregate_task_info += f"- {task_info_line}\n"
+        #     info_parts.append(aggregate_task_info)
 
-        info_msg = "\n\n".join(info_parts).strip()
-        if len(info_msg) == 0:
-            info_msg = "[Info] No Information now."
+        # info_msg = "\n\n".join(info_parts).strip()
+        # if len(info_msg) == 0:
+        #     info_msg = "[Info] No Information now."
 
         return {
-            "info_message": HumanMessage(info_msg),
+            "info_message": InfoMessage(),
         }
 
     async def decide(self, state: State):
-        PREFIX = '{"content":'
-
         input_msgs = (
             [self.decide_model_prompt]
             + state["presistent_messages"]
             + state["input_messages"]
             + state["new_messages"]
-            + [
-                state["info_message"],
-                AIMessage(
-                    PREFIX,
-                    additional_kwargs={"partial": True},
-                ),
-            ]
+            + [state["info_message"]]
         )
 
-        msg: AIMessage = await self.model.ainvoke(input_msgs, seed=time.time_ns())
+        msg: AIMessage = await self.model.ainvoke(input_msgs)
 
-        return {"decide_result": json.loads(PREFIX + msg.content)}
+        return {"decide_result": json.loads(msg.content)}
 
     async def response_fields_process(self, state: State):
-
-        # if state["decide_result"]["expression"]:
-        #     self.task_manager.trigger_event(
-        #         ExpressionSetEvent(
-        #             state["decide_result"]["expression"]["type"],
-        #             state["decide_result"]["expression"]["duration"],
-        #         )
-        #     )
-
         for k, v in state["decide_result"].items():
-            if k in ("content", "tool"):
+            if k == "tools":
                 continue
             TaskManager.trigger_event(PluginFieldEvent(k, v))
 
-        if content := state["decide_result"].get("content", None):
-            TaskManager.trigger_event(SpeakEvent(content))
-            return {"new_messages": [AIMessage(content)]}
 
     async def tool_check(self, state: State):
-        if state["decide_result"].get("tool", None) is not None:
-            return True
-        return False
+        return len(state["decide_result"].get("tools", [])) > 0
+
+    # async def get_tool_call_msg(self, state: State):
+    #     tool_call_system = SystemMessage(
+    #         "Call appropriate tools based on message history and final decision content."
+    #     )
+    #     input_msgs = (
+    #         [tool_call_system]
+    #         + state["presistent_messages"]
+    #         + state["input_messages"]
+    #         + state["new_messages"]
+    #         + [state["info_message"]]
+    #         + [
+    #             AIMessage(json.dumps(state["decide_result"])),
+    #             HumanMessage(
+    #                 "You've just made such a decision, now you should call tools directly."
+    #             ),
+    #         ]
+    #     )
+
+    #     msg: AIMessage = await self.model.ainvoke(input_msgs)
+    #     print(msg.invalid_tool_calls)
+    #     assert msg.tool_calls
+    #     return {"new_messages": [msg]}
 
     async def tool_prepare(self, state: State):
         return {
@@ -202,29 +225,31 @@ class Agent:
                     "",
                     tool_calls=[
                         {
-                            **state["decide_result"]["tool"],
-                            "id": f"{state["decide_result"]["tool"]["name"]}_{datetime.datetime.now()}",
+                            **tool_call,
+                            "id": f"{tool_call["name"]}_{datetime.datetime.now()}",
                         }
+                        for tool_call in state["decide_result"]["tools"]
                     ],
                 )
             ]
         }
 
-    async def tool_artifact_process(self, state: State):
-        msg: ToolMessage = state["new_messages"][-1]
-        print(msg)
-        if msg.artifact:
-            if isinstance(msg.artifact, Task):
-                await TaskManager.add_task(msg.artifact)
-            elif isinstance(msg.artifact, Event):
-                TaskManager.trigger_event(msg.artifact)
-            if not self.message_queue.empty():
-                return {"new_messages": [HumanMessage(self.message_queue.get_nowait())]}
+    # async def tool_artifact_process(self, state: State):
+    #     msg: ToolMessage = state["new_messages"][-1]
+    #     print(msg)
+    #     if msg.artifact:
+    #         if isinstance(msg.artifact, Task):
+    #             await TaskManager.add_task(msg.artifact)
+    #         elif isinstance(msg.artifact, Event):
+    #             TaskManager.trigger_event(msg.artifact)
+    #         if not self.message_queue.empty():
+    #             return {"new_messages": [HumanMessage(self.message_queue.get_nowait())]}
 
     async def postprocess(self, state: State):
         new_presistent_messages = []
         for msg in state["input_messages"]:
-            if msg.content.startswith("[User Input]"):
+            # if msg.content.startswith("[User Input]"):
+            if isinstance(msg, UserMessage):
                 new_presistent_messages.append(msg)
         for msg in state["new_messages"]:
             if isinstance(msg, (AIMessage, ToolMessage)):
@@ -246,22 +271,26 @@ class Agent:
         builder.add_node("decide", self.decide)
         builder.add_node("fields_process", self.response_fields_process)
         builder.add_node("tool_prepare", self.tool_prepare)
+        # builder.add_node("tool_call_msg", self.get_tool_call_msg)
         builder.add_node("tools", ToolNode(tools, messages_key="new_messages"))
-        builder.add_node("tool_artifact_process", self.tool_artifact_process)
+        # builder.add_node("tool_artifact_process", self.tool_artifact_process)
         builder.add_node("postprocess", self.postprocess)
 
         builder.add_edge(START, "preprocess")
         builder.add_edge("preprocess", "info")
         builder.add_edge("info", "decide")
         builder.add_edge("decide", "fields_process")
+        # builder.add_edge("fields_process", "postprocess")
         builder.add_conditional_edges(
             "fields_process",
             self.tool_check,
             {True: "tool_prepare", False: "postprocess"},
         )
         builder.add_edge("tool_prepare", "tools")
-        builder.add_edge("tools", "tool_artifact_process")
-        builder.add_edge("tool_artifact_process", "info")
+        # builder.add_edge("tool_call_msg", "tools")
+        # builder.add_edge("tools", "info")
+        builder.add_edge("tools", "info")
+        # builder.add_edge("tool_artifact_process", "info")
         builder.add_edge("postprocess", END)
 
         return builder.compile()
@@ -269,15 +298,18 @@ class Agent:
     def on_event(self, e: Event):
         msg = e.agent_msg()
         if msg:
-            if e.msg_prefix:
-                msg = f"[{e.msg_prefix}] {msg}"
+            if isinstance(msg, str):
+                msg = EventMessage(msg)
             self.message_queue.put_nowait(msg)
+            if not isinstance(msg, AIMessage):
+                self.should_invoke = True
 
     async def run(self):
         try:
             while True:
-                while self.message_queue.empty():
+                while not self.should_invoke:
                     await asyncio.sleep(0.5)
+                assert not self.message_queue.empty()
                 final_state = None
                 thinking = False
                 async for mode, data in self.graph.astream(
@@ -305,4 +337,3 @@ class Agent:
                 self.state = final_state
         except asyncio.CancelledError:
             pass
-

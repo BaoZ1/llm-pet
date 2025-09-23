@@ -1,6 +1,7 @@
 from framework.plugin import BasePlugin, PetPluginProtocol
-from framework.agent import InvokeStartEvent, SpeakEvent
+from framework.event import InvokeStartEvent
 from framework.window import TransparentWindow, set_bubble, WidgetBubbleRef, BubbleDirection, BubbleOverflowAction
+from plugins.speak.plugin import Plugin as SpeakPlugin, SpeakEvent
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QLayout
@@ -67,7 +68,7 @@ class TextBubble(TransparentWindow):
 
 
 class Plugin(BasePlugin):
-    deps = [PetPluginProtocol]
+    deps = [PetPluginProtocol, SpeakPlugin]
 
     def init(self):
         pet = self.dep(PetPluginProtocol).pet()
@@ -85,5 +86,3 @@ class Plugin(BasePlugin):
                 self.text_bubble.show_loading()
             case SpeakEvent(text):
                 self.text_bubble.show_message(text)
-
-

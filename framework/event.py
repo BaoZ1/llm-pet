@@ -1,25 +1,34 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import ClassVar, Self, Never, Callable, TYPE_CHECKING
+from typing import Any, ClassVar, Self, Never, Callable
 import asyncio
-if TYPE_CHECKING:
-    from .agent import Agent
+from langchain_core.messages import BaseMessage
 
 
 class Event(ABC):
     tags: ClassVar[list[str]] = []
-    msg_prefix: ClassVar[str | None] = "Event"
 
     @property
     def name(self):
         return self.__class__.__name__
 
-    def trigger(self):
-        pass
-
-    def agent_msg(self) -> str | None:
+    def agent_msg(self) -> str | BaseMessage | None:
         return None
+
+
+class InvokeStartEvent(Event):
+    pass
+
+
+class InvokeEndEvent(Event):
+    pass
+
+
+@dataclass
+class PluginFieldEvent(Event):
+    key: str
+    value: Any
 
 
 @dataclass

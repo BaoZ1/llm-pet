@@ -21,7 +21,7 @@ from .worker import ThreadedWorker
 from .event import Task, Event, TaskManager
 from PySide6.QtWidgets import QWidget
 
-
+@runtime_checkable
 class PluginProtocol(Protocol):
     pass
 
@@ -48,7 +48,7 @@ class BasePlugin:
     @classmethod
     def root_dir(cls):
         return pathlib.Path(inspect.getmodule(cls).__file__).parent
-    
+
     @classmethod
     def identifier(cls):
         return "/".join(cls.__module__.split(".")[1:-1])
@@ -68,10 +68,11 @@ class BasePlugin:
         config_file = cls.root_dir() / "config.yaml"
         if config_file.exists():
             config_dict = yaml.load(config_file.read_text("utf-8"), yaml.Loader)
+            cls._config = cls.config_type()(**config_dict)
         else:
-            config_dict = {}
-        cls._config = cls.config_type()(**config_dict)
-    
+            cls._config = cls.config_type()()
+            cls.update_config(cls._config)
+
     @classmethod
     def get_config(cls):
         if cls._config is None:
@@ -88,7 +89,7 @@ class BasePlugin:
 
     def dep[T: BasePlugin | PluginProtocol](self, dep: type[T]) -> T:
         assert dep in self.deps
-        d = PluginManager.get_plugins(dep)
+        d = PluginManager.get_loaded_plugins(dep)
         assert len(d) > 0
         return d[0]
 
@@ -118,6 +119,7 @@ class BasePlugin:
 
 
 class Tool:
+    name: str
     with_artifect: ClassVar[bool] = False
 
     def __init__(self, plugin: BasePlugin):
@@ -130,8 +132,8 @@ class Tool:
         assert self.invoke.__doc__
 
         if self.with_artifect:
-            return tool(self.invoke, response_format="content_and_artifact")
-        return tool(self.invoke)
+            return tool(self.name, response_format="content_and_artifact")(self.invoke)
+        return tool(self.name)(self.invoke)
 
 
 class PluginManager:
@@ -196,7 +198,7 @@ class PluginManager:
             if plugin_class.get_config().enabled:
                 deps = []
                 for dep_class in plugin_class.deps:
-                    loaded_deps = cls.get_plugins(dep_class)
+                    loaded_deps = cls.get_loaded_plugins(dep_class)
                     if len(loaded_deps) == 0:
                         raise Exception(dep_class)
                     deps.append(loaded_deps[0])
@@ -267,7 +269,16 @@ class PluginManager:
         return formated_infos
 
     @classmethod
-    def get_plugins(cls, type: type[BasePlugin] | type[PluginProtocol]):
+    def get_plugin_classes(cls, type: type[BasePlugin] | type[PluginProtocol]):
+        return list(
+            filter(
+                lambda p: issubclass(p, type),
+                cls.plugin_classes,
+            )
+        )
+
+    @classmethod
+    def get_loaded_plugins(cls, type: type[BasePlugin] | type[PluginProtocol]):
         return list(
             filter(
                 lambda p: isinstance(p, type),
