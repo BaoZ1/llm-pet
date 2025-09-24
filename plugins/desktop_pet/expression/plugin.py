@@ -4,7 +4,7 @@ from framework.event import Event
 from dataclasses import dataclass
 import pathlib
 import time
-from plugins.pet_state.plugin import Plugin as PetStatePlugin, ModifyPetStateEvent
+from plugins.desktop_pet.pet_state.plugin import Plugin as PetStatePlugin, ModifyPetStateEvent
 from PySide6.QtCore import QTimer
 
 

@@ -1,8 +1,8 @@
 from framework.plugin import BasePlugin
 from framework.config import BaseConfig
 from dataclasses import dataclass, field
-from plugins.live2d_pet.plugin import Plugin as Live2dPetPlugin
-from plugins.expression.plugin import Plugin as ExpressionPlugin, ExpressionSetEvent
+from plugins.desktop_pet.live2d_pet.plugin import Plugin as Live2dPetPlugin
+from plugins.desktop_pet.expression.plugin import Plugin as ExpressionPlugin, ExpressionSetEvent
 from live2d.v3.live2d import LAppModel
 from typing import cast, Annotated
 

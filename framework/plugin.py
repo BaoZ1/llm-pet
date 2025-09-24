@@ -2,7 +2,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import pathlib
-from langchain_core.tools import tool
+from langchain_core.tools import tool, BaseTool
 from typing import (
     Any,
     ClassVar,
@@ -139,6 +139,7 @@ class Tool:
 class PluginManager:
     plugin_classes: ClassVar[list[type[BasePlugin]]]
     plugins: ClassVar[list[BasePlugin]]
+    tools: ClassVar[list[BaseTool]]
 
     @classmethod
     def init(cls):
@@ -203,10 +204,10 @@ class PluginManager:
                         raise Exception(dep_class)
                     deps.append(loaded_deps[0])
                 cls.plugins.append(plugin_class())
-        tools = []
+        cls.tools = []
         for p in cls.plugins:
             p.init()
-            tools.extend([f(p).langchain_wrap() for f in p.tools()])
+            cls.tools.extend([f(p).langchain_wrap() for f in p.tools()])
 
         prompt_folder = pathlib.Path("prompts/zh-CN")
         with (
@@ -227,9 +228,12 @@ class PluginManager:
             plugin_prompt_comps.append(str_prompts)
 
         prompt_comps |= cls.merge_str_dict(plugin_prompt_comps)
-        system_prompt = prompt_template.format_map(prompt_comps)
+        for k, v in prompt_comps.items():
+            prompt_template = prompt_template.replace(f"{{{{{k}}}}}", v)
+        # system_prompt = prompt_template.format_map(prompt_comps)
+        system_prompt = prompt_template
 
-        return system_prompt, tools
+        return system_prompt, cls.tools
 
     @staticmethod
     def merge_str_dict(

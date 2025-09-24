@@ -673,9 +673,10 @@ class UnionFieldEdit(QWidget, TypeFieldEdit[UnionType]):
 
     def set_value(self, value):
         origins = [get_origin(t) or t for t in self.field_types]
-        idx = origins.index(type(value))
+        vt = type(value)
+        idx = origins.index(vt)
         self.type_selector.setCurrentIndex(idx)
-        self.editors[idx].set_value(value)
+        self.editors[vt].set_value(value)
 
     def change_type_idx(self, idx):
         self.field_input.setCurrentIndex(idx)
@@ -855,7 +856,7 @@ class SinglePluginCollapsibleWidget(QWidget):
                 }}
             """
         )
-        
+
         if len(self.plugin_class.deps) == 0:
             self.deps_hint_label.setText("deps: None")
         else:
@@ -939,9 +940,14 @@ class PluginConfigWindow(QWidget):
             wrapped_widget.config_widget.enable_changed.connect(self.refresh_display)
             wrapped_widget.expanded.connect(self.close_others)
         config_content.setLayout(config_content_layout)
-        self.c = config_content
         config_list_area.setWidget(config_content)
-        self.a = config_list_area
+
+        restart_btn = QPushButton("Restart")
+        restart_btn.clicked.connect(
+            lambda: os.execl(sys.executable, sys.executable, *sys.argv)
+        )
+        layout.addWidget(restart_btn)
+
         self.setLayout(layout)
 
     def refresh_display(self):

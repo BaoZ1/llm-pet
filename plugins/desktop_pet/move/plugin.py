@@ -82,7 +82,7 @@ class Plugin(BasePlugin):
 
     def infos(self):
         return {
-            "Environment": {
+            "Screen": {
                 "Screen Size": self.screen_size,
                 "Your Position": self.pet.pos().toTuple(),
             }

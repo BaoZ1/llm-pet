@@ -1,8 +1,11 @@
 from framework.plugin import BasePlugin
 from framework.config import BaseConfig
 from dataclasses import dataclass, field
-from plugins.base_pet.plugin import Plugin as BasePetPlugin
-from plugins.expression.plugin import Plugin as ExpressionPlugin, ExpressionSetEvent
+from plugins.desktop_pet.base_pet.plugin import Plugin as BasePetPlugin
+from plugins.desktop_pet.expression.plugin import (
+    Plugin as ExpressionPlugin,
+    ExpressionSetEvent,
+)
 from typing import cast, Annotated
 
 @dataclass

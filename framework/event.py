@@ -1,7 +1,7 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, ClassVar, Self, Never, Callable
+from typing import Any, ClassVar, Self, Never, Callable, Sequence
 import asyncio
 from langchain_core.messages import BaseMessage
 
@@ -13,7 +13,7 @@ class Event(ABC):
     def name(self):
         return self.__class__.__name__
 
-    def agent_msg(self) -> str | BaseMessage | None:
+    def agent_msg(self) -> str | BaseMessage | Sequence[str | BaseMessage] | None:
         return None
 
 
@@ -33,7 +33,7 @@ class PluginFieldEvent(Event):
 
 @dataclass
 class PlainEvent(Event):
-    content: str
+    content: str | BaseMessage | Sequence[str | BaseMessage]
 
     def agent_msg(self):
         return self.content
@@ -51,9 +51,7 @@ class Task(ABC):
     def execute_info(self) -> str | None:
         return None
 
-    def merge(self, old_task: Self | None) -> tuple[Self | None, str | None] | Never:
-        if old_task is None:
-            return self, None
+    def merge(self, old_task: Self) -> tuple[Self, str | None] | tuple[None, None] | Never:
         raise
 
     def on_event(self, event: Event):
@@ -94,14 +92,19 @@ class TaskManager:
     @classmethod
     async def add_task(cls, new_task: Task):
         old_task, running_old_task = cls.tasks.get(new_task.name, (None, None))
-        merged_task, msg = new_task.merge(old_task)
-        if merged_task is not None:
+        if old_task is not None:
+            merged_task, msg = new_task.merge(old_task)
+            if merged_task is None:
+                return
             if running_old_task is not None:
                 running_old_task.cancel()
-            cls.tasks[merged_task.name] = (
-                merged_task,
-                asyncio.create_task(cls.task_wrapper(merged_task)),
-            )
+            new_task = merged_task
+        else:
+            msg = None
+        cls.tasks[new_task.name] = (
+            new_task,
+            asyncio.create_task(cls.task_wrapper(new_task)),
+        )
         cls.trigger_event(NewTaskEvent(old_task, new_task, msg))
 
     @classmethod

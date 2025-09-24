@@ -1,6 +1,5 @@
 from framework.plugin import BasePlugin, PetPluginProtocol
-from framework.event import Event
-from framework.agent import UserMessage
+from framework.agent import UserInputEvent
 from framework.window import (
     TransparentWindow,
     set_bubble,
@@ -8,7 +7,6 @@ from framework.window import (
     BubbleDirection,
     BubbleOverflowAction,
 )
-from dataclasses import dataclass
 import math
 from PySide6.QtCore import Qt, QObject, QEvent, Signal
 from PySide6.QtGui import QMouseEvent, QKeyEvent, QFocusEvent
@@ -86,14 +84,6 @@ class InputBubble(TransparentWindow):
                     self.hide()
                 return True
         return False
-
-@dataclass
-class UserInputEvent(Event):
-    tags = ["user"]
-    content: str
-
-    def agent_msg(self):
-        return UserMessage(self.content)
 
 
 class Plugin(BasePlugin):

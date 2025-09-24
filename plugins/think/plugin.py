@@ -6,12 +6,6 @@ from typing import cast
 from langchain_core.messages import AIMessage
 import pathlib
 
-@dataclass
-class SpeakEvent(Event):
-    content: str
-
-    def agent_msg(self):
-        return AIMessage(self.content)
 
 @dataclass
 class Config(BaseConfig):
