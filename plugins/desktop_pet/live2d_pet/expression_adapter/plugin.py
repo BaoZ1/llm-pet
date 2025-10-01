@@ -12,7 +12,7 @@ class Config(BaseConfig):
 
 
 class Plugin(BasePlugin):
-    deps = [Live2dPetPlugin, ExpressionPlugin]
+    deps = [Live2dPetPlugin]
 
     def init(self):
         self.live2d_model: LAppModel | None = None

@@ -8,26 +8,20 @@ from framework.plugin import PluginManager
 from framework.worker import ThreadedWorker
 from framework.window import TestTray, EventBridge
 
+
 def main():
     ThreadedWorker.start()
 
-    agent = Agent()
+    TaskManager.register_callback("agent_class", Agent.class_on_event)
 
     app = QApplication([])
     app.setQuitOnLastWindowClosed(False)
-
-    PluginManager.init()
 
     bridge = EventBridge()
     TaskManager.register_callback("bridge", bridge.event_recived.emit)
     bridge.event_recived.connect(PluginManager.on_event)
 
-    sys_prompt, tools = PluginManager.init_plugins()
-    agent.init(sys_prompt, tools)
-
-    TaskManager.register_callback("agent", agent.on_event)
-
-    ThreadedWorker.submit_task(agent.run)
+    PluginManager.init()
 
     TestTray.init()
 

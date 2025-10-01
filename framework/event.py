@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, Self, Never, Callable, Sequence
 import asyncio
 from langchain_core.messages import BaseMessage
+from langchain_core.tools import BaseTool
+import threading
 
 
 class Event(ABC):
@@ -13,7 +15,7 @@ class Event(ABC):
     def name(self):
         return self.__class__.__name__
 
-    def agent_msg(self) -> str | BaseMessage | Sequence[str | BaseMessage] | None:
+    def agent_msg(self) -> BaseMessage | Sequence[BaseMessage] | None:
         return None
 
 
@@ -38,6 +40,11 @@ class PlainEvent(Event):
     def agent_msg(self):
         return self.content
 
+@dataclass
+class PluginRefreshEvent(Event):
+    sys_prompt: str
+    tools: Sequence[BaseTool]
+
 
 class Task(ABC):
     @property
@@ -51,7 +58,7 @@ class Task(ABC):
     def execute_info(self) -> str | None:
         return None
 
-    def merge(self, old_task: Self) -> tuple[Self, str | None] | tuple[None, None] | Never:
+    def merge(self, old_task: Self) -> tuple[Self, BaseMessage | None] | tuple[None, None] | Never:
         raise
 
     def on_event(self, event: Event):
@@ -62,7 +69,7 @@ class Task(ABC):
 class NewTaskEvent(Event):
     old_task: Task | None
     new_task: Task
-    msg: str | None
+    msg: BaseMessage | None
 
     def agent_msg(self):
         return self.msg
@@ -71,6 +78,7 @@ class NewTaskEvent(Event):
 class TaskManager:
     tasks: ClassVar[dict[str, tuple[Task, asyncio.Task]]] = {}
     event_callbacks: ClassVar[dict[str, Callable[[Event], None]]] = {}
+    cb_lock = threading.Lock()
 
     @classmethod
     async def task_wrapper(cls, task: Task):
@@ -109,25 +117,35 @@ class TaskManager:
 
     @classmethod
     def register_callback(cls, key: str, cb: Callable[[Event], None]):
-        assert key not in cls.event_callbacks
-        cls.event_callbacks[key] = cb
+        with cls.cb_lock:
+            assert key not in cls.event_callbacks
+            cls.event_callbacks[key] = cb
 
     @classmethod
     def remove_callback(cls, key: str):
-        cls.event_callbacks.pop(key, None)
+        with cls.cb_lock:
+            cls.event_callbacks.pop(key, None)
 
     @classmethod
     def trigger_event(cls, event: Event):
         for task, _ in cls.tasks.values():
             task.on_event(event)
-        for cb in cls.event_callbacks.values():
-            cb(event)
+        with cls.cb_lock:
+            for cb in cls.event_callbacks.values():
+                cb(event)
 
     @classmethod
-    def task_execute_infos(cls) -> list[str]:
-        return list(
+    def task_execute_infos(cls) -> str | None:
+        info_lines =  list(
             filter(
                 lambda x: x is not None,
                 [task.execute_info() for task, _ in cls.tasks.values()],
             )
         )
+        if len(info_lines):
+            aggregate_task_info = "Running Tasks:\n"
+            for line in info_lines:
+                aggregate_task_info += f"- {line}\n"
+            return aggregate_task_info
+        else:
+            return None

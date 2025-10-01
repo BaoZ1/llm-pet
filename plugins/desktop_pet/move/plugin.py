@@ -1,10 +1,13 @@
-from framework.plugin import BasePlugin, PetPluginProtocol
+from framework.plugin import BasePlugin
 from framework.event import PluginFieldEvent, Event, Task, TaskManager
+from framework.agent import EventMessage
+from plugins.desktop_pet.pet import PetPluginBase
 import asyncio
 from dataclasses import dataclass
 import math
 import pathlib
 from typing import Literal
+from PySide6.QtCore import QPoint
 from PySide6.QtWidgets import QApplication
 
 
@@ -17,7 +20,7 @@ class MoveEvent(Event):
 
     def agent_msg(self):
         if self.finished:
-            return f"You've arrived at {self.new_pos}"
+            return EventMessage(f"You've arrived at {self.new_pos}")
 
 
 class MoveTask(Task):
@@ -71,11 +74,15 @@ class MoveTask(Task):
 
 
 class Plugin(BasePlugin):
-    deps = [PetPluginProtocol]
+    deps = [PetPluginBase]
 
-    def init(self):
-        self.pet = self.dep(PetPluginProtocol).pet()
-        self.screen_size: tuple[int, int] = (QApplication.primaryScreen().size() - self.pet.size()).toTuple()
+    def on_dep_load(self, dep):
+        if isinstance(dep, PetPluginBase):
+            self.pet = dep.pet
+            self.screen_size: tuple[int, int] = (
+                (QApplication.primaryScreen().size() - self.pet.size())
+                * QApplication.primaryScreen().devicePixelRatio()
+            ).toTuple()
 
     def prompts(self):
         return {"json_fields": pathlib.Path(__file__).with_name("move_field.md")}
@@ -84,18 +91,26 @@ class Plugin(BasePlugin):
         return {
             "Screen": {
                 "Screen Size": self.screen_size,
-                "Your Position": self.pet.pos().toTuple(),
+                "Your Position": (
+                    self.pet.pos() * QApplication.primaryScreen().devicePixelRatio()
+                ).toTuple(),
             }
         }
-
 
     def on_event(self, e):
         match e:
             case PluginFieldEvent("move", args):
                 self.add_task(
-                    MoveTask(self.pet.pos().toTuple(), args["target"], args["action"])
+                    MoveTask(
+                        (
+                            self.pet.pos()
+                            * QApplication.primaryScreen().devicePixelRatio()
+                        ).toTuple(),
+                        args["target"],
+                        args["action"],
+                    )
                 )
             case MoveEvent(new_pos, _):
-                self.pet.move(*new_pos)
-
-
+                self.pet.move(
+                    QPoint(*new_pos) / QApplication.primaryScreen().devicePixelRatio()
+                )

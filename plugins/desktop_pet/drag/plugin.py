@@ -1,7 +1,9 @@
 from typing import cast
-from framework.plugin import BasePlugin, PetPluginProtocol
+from framework.plugin import BasePlugin
 from framework.config import BaseConfig
 from framework.event import Event, Task
+from framework.agent import EventMessage
+from plugins.desktop_pet.pet import PetPluginBase
 from dataclasses import dataclass
 import asyncio
 from PySide6.QtCore import Qt, QObject, QEvent, QPoint, Signal
@@ -34,12 +36,12 @@ class DragEvent(Event):
 
 class DragStartEvent(DragEvent):
     def agent_msg(self):
-        return "You are being dragged up by the user!"
+        return EventMessage("You are being dragged up by the user!")
 
 
 class DragEndEvent(DragEvent):
     def agent_msg(self):
-        return "You are put down by the user!"
+        return EventMessage("You are put down by the user!")
 
 
 class DragTask(Task):
@@ -66,19 +68,25 @@ class Config(BaseConfig):
 
 class Plugin(BasePlugin):
     name = "drag"
-    deps = [PetPluginProtocol]
+    deps = [PetPluginBase]
 
     def init(self):
         self.press_pos: QPoint
         self.start_pos: QPoint
         self.dragging = False
 
-        self.pet = self.dep(PetPluginProtocol).pet()
         self.event_filter = DragEventFilter()
-        self.pet.installEventFilter(self.event_filter)
         self.event_filter.pressed.connect(self.mouse_press)
         self.event_filter.moved.connect(self.mouse_move)
         self.event_filter.released.connect(self.mouse_release)
+        
+    def clear(self):
+        self.event_filter.deleteLater()
+
+    def on_dep_load(self, dep):
+        if isinstance(dep, PetPluginBase):
+            self.pet = dep.pet
+            self.pet.installEventFilter(self.event_filter)
 
     def mouse_press(self, e: QMouseEvent):
         self.press_pos = QCursor.pos()
@@ -104,4 +112,3 @@ class Plugin(BasePlugin):
             self.dragging = False
             if cast(Config, self.get_config()).trigger_event:
                 self.trigger_event(DragEndEvent())
-

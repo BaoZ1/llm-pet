@@ -17,14 +17,16 @@ class Plugin(BasePlugin):
     deps = [PetStatePlugin]
 
     def init(self):
-        self.state = self.dep(PetStatePlugin).state
-
         self.normal_expression: str = "normal"
         self.current_expression: tuple[str, str] | None = None
         self.expression: str | None = None
 
         self.last_update_time = time.time()
         self.clear_expression_timer: QTimer | None = None
+        
+    def on_dep_load(self, dep):
+        if isinstance(dep, PetStatePlugin):
+            self.state = dep.state
 
     def prompts(self):
         return {"json_fields": self.root_dir() / "expression_field.md"}

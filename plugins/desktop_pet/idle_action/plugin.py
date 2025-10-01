@@ -1,5 +1,6 @@
-from framework.plugin import BasePlugin, PetPluginProtocol
+from framework.plugin import BasePlugin
 from framework.event import Event, PlainEvent, Task, TaskManager
+from plugins.desktop_pet.pet import PetPluginBase
 import asyncio
 from dataclasses import dataclass
 import math
@@ -60,14 +61,9 @@ class WanderTask(Task):
 
 class Plugin(BasePlugin):
     name = "idle_action"
-    deps = [PetPluginProtocol]
+    deps = [PetPluginBase]
 
     def init(self):
-        self.pet = self.dep(PetPluginProtocol).pet()
-        self.screen_range: tuple[int, int] = (
-            QApplication.primaryScreen().size() - self.pet.size()
-        ).toTuple()
-
         self.bored_interval = (80, 200)
         self.bored_timer = QTimer()
         self.bored_timer.timeout.connect(self.emit_bored)
@@ -78,6 +74,17 @@ class Plugin(BasePlugin):
         self.wander_timer = QTimer()
         self.wander_timer.timeout.connect(self.start_wandering)
         self.wander_timer.start(random.randrange(*self.wander_interval) * 1e3)
+        
+    def clear(self):
+        self.bored_timer.stop()
+        self.wander_timer.stop()
+        
+    def on_dep_load(self, dep):
+        if isinstance(dep, PetPluginBase):
+            self.pet = dep.pet
+            self.screen_range: tuple[int, int] = (
+                QApplication.primaryScreen().size() - self.pet.size()
+            ).toTuple()
 
     def emit_bored(self):
         self.trigger_event(PlainEvent("You feel a bit bored..."))

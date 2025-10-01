@@ -1,4 +1,5 @@
-from framework.plugin import BasePlugin, PetPluginProtocol
+from framework.event import InvokeStartEvent, InvokeEndEvent
+from framework.plugin import BasePlugin
 from framework.agent import UserInputEvent
 from framework.window import (
     TransparentWindow,
@@ -7,10 +8,13 @@ from framework.window import (
     BubbleDirection,
     BubbleOverflowAction,
 )
+from plugins.desktop_pet.pet import PetPluginBase
 import math
-from PySide6.QtCore import Qt, QObject, QEvent, Signal
-from PySide6.QtGui import QMouseEvent, QKeyEvent, QFocusEvent
-from PySide6.QtWidgets import QTextEdit, QVBoxLayout, QLayout
+from PySide6.QtCore import Qt, QObject, QEvent, Signal, QTimer
+from PySide6.QtGui import QMouseEvent, QKeyEvent, QFocusEvent, QFont
+from PySide6.QtWidgets import QTextEdit, QVBoxLayout, QLayout, QLabel
+
+from plugins.speak.plugin import SpeakEvent
 
 
 class ClickEventFilter(QObject):
@@ -86,35 +90,128 @@ class InputBubble(TransparentWindow):
         return False
 
 
+class TextBubble(TransparentWindow):
+    def __init__(self):
+        super().__init__()
+
+        layout = QVBoxLayout(self)
+
+        self.label = QLabel()
+        self.label.setWordWrap(True)
+        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.label.setStyleSheet(
+            """
+            background-color: white;
+            border: 2px solid #ccc;
+            border-radius: 10px;
+            padding: 5px;
+        """
+        )
+        font = QFont()
+        font.setPointSize(14)
+        self.label.setFont(font)
+
+        layout.addWidget(self.label)
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)
+
+        self.loading = False
+
+        self.hide()
+        self.hide_timer = QTimer()
+        self.hide_timer.setSingleShot(True)
+        self.hide_timer.timeout.connect(self.on_finish_show)
+
+    def show_loading(self):
+        self.loading = True
+
+        if self.hide_timer.isActive():
+            return
+
+        self.label.setText("...")
+        self.label.adjustSize()
+
+        self.show()
+
+    def show_message(self, text):
+        self.loading = False
+
+        self.hide_timer.stop()
+
+        self.label.setText(text)
+        self.adjustSize()
+
+        self.show()
+        self.hide_timer.start(5000)
+        
+    def stop_loading(self):
+        self.loading = False
+
+        if self.hide_timer.isActive():
+            return
+        
+        self.hide()
+
+    def on_finish_show(self):
+        if self.loading:
+            self.show_loading()
+        else:
+            self.hide()
+
+
 class Plugin(BasePlugin):
-    deps = [PetPluginProtocol]
+    deps = [PetPluginBase]
 
     def init(self):
         self.press_moved = True
-        self.pet = self.dep(PetPluginProtocol).pet()
+
         self.event_filter = ClickEventFilter()
-        self.pet.installEventFilter(self.event_filter)
         self.event_filter.pressed.connect(self.mouse_press)
         self.event_filter.moved.connect(self.mouse_move)
         self.event_filter.released.connect(self.mouse_release)
 
         self.input_bubble = InputBubble()
-        set_bubble(
-            self.input_bubble,
-            WidgetBubbleRef(self.pet),
-            (BubbleDirection.Bottom, BubbleDirection.Center),
-            [BubbleOverflowAction.Shift],
-        )
         self.input_bubble.text_submitted.connect(
             lambda text: self.trigger_event(UserInputEvent(text))
         )
+
+        self.text_bubble = TextBubble()
+
+    def clear(self):
+        self.event_filter.deleteLater()
+        self.input_bubble.deleteLater()
+        self.text_bubble.deleteLater()
+
+    def on_dep_load(self, dep):
+        if isinstance(dep, PetPluginBase):
+            self.pet = dep.pet
+            self.pet.installEventFilter(self.event_filter)
+            set_bubble(
+                self.input_bubble,
+                WidgetBubbleRef(self.pet),
+                (BubbleDirection.Bottom, BubbleDirection.Center),
+                [BubbleOverflowAction.Shift],
+            )
+            set_bubble(
+                self.text_bubble,
+                WidgetBubbleRef(dep.pet),
+                [BubbleDirection.Top, BubbleDirection.Center],
+                [BubbleOverflowAction.Flip, BubbleOverflowAction.Shift],
+            )
+
+    def on_event(self, e):
+        match e:
+            case InvokeStartEvent():
+                self.text_bubble.show_loading()
+            case SpeakEvent(text):
+                self.text_bubble.show_message(text)
+            case InvokeEndEvent():
+                self.text_bubble.stop_loading()
 
     def mouse_press(self):
         self.press_moved = False
 
     def mouse_move(self):
         self.press_moved = True
-
 
     def mouse_release(self):
         if not self.press_moved:

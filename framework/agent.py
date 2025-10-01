@@ -1,38 +1,22 @@
 from __future__ import annotations
 import json
-from typing import (
-    Any,
-    Never,
-    Self,
-    TypedDict,
-    Annotated,
-    ClassVar,
-    Callable,
-    Sequence,
-    TYPE_CHECKING,
-)
-from abc import ABC, abstractmethod
+from typing import Any, TypedDict, Annotated, ClassVar, Sequence
 from langchain_openai import ChatOpenAI
-from langchain_core.runnables import Runnable
-from langchain_core.tools import tool, BaseTool
+from langchain_core.tools import BaseTool
 from langchain_core.messages import (
     BaseMessage,
     SystemMessage,
     HumanMessage,
     AIMessage,
     ToolMessage,
-    AIMessageChunk,
 )
-from langgraph.prebuilt import ToolNode
 from langgraph.graph import StateGraph, START, END
-from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 import operator
 import asyncio
 from dataclasses import dataclass
-import datetime
-import time
 from .event import (
+    PluginRefreshEvent,
     Event,
     TaskManager,
     InvokeStartEvent,
@@ -40,6 +24,8 @@ from .event import (
     PluginFieldEvent,
 )
 from .plugin import PluginManager
+from .worker import ThreadedWorker
+from .config import GlobalConfig
 
 
 class ChatCustom(ChatOpenAI):
@@ -101,14 +87,11 @@ class InfoMessage(HumanMessage):
 
         task_infos = TaskManager.task_execute_infos()
         if task_infos:
-            aggregate_task_info = "[Info] Running Tasks:\n"
-            for task_info_line in task_infos:
-                aggregate_task_info += f"- {task_info_line}\n"
-            info_parts.append(aggregate_task_info)
+            info_parts.append(task_infos)
 
         info_msg = "\n\n".join(info_parts).strip()
         if len(info_msg) == 0:
-            info_msg = "[Info] No Information now."
+            info_msg = "No Information now."
         super().__init__(f"[Info] {info_msg}")
 
 
@@ -127,37 +110,63 @@ class ToolCallEvent(Event):
 
 
 class Agent:
+    instance: ClassVar[Agent] | None = None
 
-    def __init__(self):
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        system_prompt: str,
+        tools: Sequence[BaseTool],
+    ):
         self.state = State(
             presistent_messages=[],
             input_messages=[],
         )
 
-        self.base_model = ChatCustom(
-            base_url="https://api.moonshot.cn/v1",
-            api_key=open("test_moonshot_key.txt").read(),
-            model="kimi-k2-turbo-preview",
+        self.base_model = ChatOpenAI(
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
             temperature=0.6,
             frequency_penalty=1.0,
         )
-        self.model: Runnable
-        self.decide_model_prompt: SystemMessage
+        self.model = self.base_model.bind_tools(tools)
 
-        self.graph: CompiledStateGraph
+        self.decide_model_prompt = SystemMessage(system_prompt)
+        self.graph = self.create_graph(tools)
 
         self.message_queue = asyncio.Queue()
         self.should_invoke: bool = False
 
-    def init(self, system_prompt: str, tools: Sequence[BaseTool]):
-        self.model = self.base_model.bind_tools(tools)
-        self.decide_model_prompt = SystemMessage(system_prompt)
-        self.graph = self.create_graph(tools)
+        self.task: asyncio.Task = None
+
+    @classmethod
+    def init(cls, system_prompt: str, tools: Sequence[BaseTool]):
+        if cls.instance is not None:
+            if cls.instance.task is not None:
+                cls.instance.task.cancel()
+            ThreadedWorker.submit_task(TaskManager.remove_callback, "agent")
+        global_config = GlobalConfig.get()
+        new_instance = Agent(
+            global_config.base_url,
+            global_config.api_key,
+            global_config.model,
+            system_prompt,
+            tools,
+        )
+        cls.instance = new_instance
+        new_instance.task = ThreadedWorker.loop.create_task(new_instance.run())
+        ThreadedWorker.submit_task(
+            TaskManager.register_callback, "agent", new_instance.on_event
+        )
 
     async def preprocess(self, state: State):
         TaskManager.trigger_event(InvokeStartEvent())
 
-        messages: list[HumanMessage] = [HumanMessage("[System] Below are new messages")]
+        # messages: list[HumanMessage] = [HumanMessage("[System] Below are new messages")]
+        messages: list[HumanMessage] = []
         while not self.message_queue.empty():
             new_msg = self.message_queue.get_nowait()
             messages.append(new_msg)
@@ -266,6 +275,22 @@ class Agent:
 
         return builder.compile()
 
+    @staticmethod
+    def concat_msgs(msgs: Sequence[BaseMessage]):
+        concated_msgs: list[BaseMessage] = []
+        last_msg_data: list[str] = []
+        for msg in msgs:
+            if isinstance(msg, HumanMessage):
+                last_msg_data.append(msg.content)
+            else:
+                if len(last_msg_data) != 0:
+                    concated_msgs.append(HumanMessage("\n\n".join(last_msg_data)))
+                    last_msg_data.clear()
+                concated_msgs.append(msg)
+        if len(last_msg_data) != 0:
+            concated_msgs.append(HumanMessage("\n\n".join(last_msg_data)))
+        return concated_msgs
+
     def on_event(self, e: Event):
         msgs = e.agent_msg()
         if msgs:
@@ -285,6 +310,21 @@ class Agent:
                 while not self.should_invoke:
                     await asyncio.sleep(0.5)
                 assert not self.message_queue.empty()
+
+                # last_state = self.state
+                # async for (mode, data) in self.graph.astream(self.state, stream_mode=["messages", "values"]):
+                #     if mode == "messages":
+                #         print(data)
+                #     elif mode == "values":
+                #         last_state = data
+                #     else:
+                #         raise Exception(mode)
+                # self.state = last_state
                 self.state = await self.graph.ainvoke(self.state, stream_mode="values")
         except asyncio.CancelledError:
             pass
+
+    @classmethod
+    def class_on_event(cls, e):
+        if isinstance(e, PluginRefreshEvent):
+            cls.init(e.sys_prompt, e.tools)

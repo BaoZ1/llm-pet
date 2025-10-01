@@ -1,6 +1,7 @@
-from framework.plugin import BasePlugin, PetPluginProtocol
+from framework.plugin import BasePlugin
 from framework.config import BaseConfig
 from framework.window import TransparentWindow
+from plugins.desktop_pet.pet import PetPluginBase
 import pathlib
 from typing import cast, Annotated
 from dataclasses import dataclass
@@ -69,16 +70,13 @@ class Config(BaseConfig):
     model_json: pathlib.Path = pathlib.Path(__file__)
 
 
-class Plugin(BasePlugin, PetPluginProtocol):
+class Plugin(BasePlugin, PetPluginBase):
     def init(self):
-        self._pet = Live2dPet(
+        self.pet = Live2dPet(
             str((self.root_dir() / cast(Config, self.get_config()).model_json).absolute())
         )
-        
-        self._pet.show()
-        
-    def live2d_model(self):
-        return self._pet.render_widget.model
 
-    def pet(self):
-        return self._pet
+        self.pet.show()
+
+    def live2d_model(self):
+        return cast(Live2dPet, self.pet).render_widget.model
