@@ -1,7 +1,18 @@
-from framework.plugin import BasePlugin
+from __future__ import annotations
+from framework.plugin import BasePlugin, Tool
+from framework.config import BaseConfig, GlobalConfig, ModelConfig, create_model
 from framework.event import Event, PlainEvent
-from framework.agent import PluginFieldEvent
-from typing import TypedDict
+from framework.agent import InvokeEndEvent, MarkerEvent
+from framework.worker import ThreadedWorker
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import (
+    SystemMessage,
+    BaseMessage,
+    HumanMessage,
+    ToolMessage,
+    AIMessage,
+)
+from typing import TypedDict, cast
 from dataclasses import dataclass
 import pathlib
 
@@ -53,13 +64,12 @@ class ModifyPetStateEvent(Event):
     state_name: str
     delta: int
 
-
 class Plugin(BasePlugin):
-    def init(self): 
+    def init(self):
         self.state = PetState(mood=50, health=98, hunger=90)
 
     def prompts(self):
-        return {"json_fields": self.root_dir() / "mood_field.md"}
+        return {"marker": self.root_dir() / "mood_marker.md"}
 
     def infos(self):
         return {
@@ -70,10 +80,12 @@ class Plugin(BasePlugin):
 
     def on_event(self, e):
         match e:
-            case PluginFieldEvent("mood_delta", delta):
-                self.trigger_event(ModifyPetStateEvent("mood", delta))
             case ModifyPetStateEvent(name, delta):
                 self.modify_state(name, delta)
+            # case InvokeEndEvent(inputs, news):
+            #     ThreadedWorker.submit_task(self.invoke_mood_model, inputs, news)
+            case MarkerEvent("mood", data):
+                self.trigger_event(ModifyPetStateEvent("mood", int(data)))
 
     def state_desc(self, name: str):
         value = self.state[name]
@@ -94,11 +106,9 @@ class Plugin(BasePlugin):
     def modify_state(self, name: str, delta: int):
         if delta == 0:
             return
-        
+
         prev_desc = self.state_desc(name)
-        self.state[name] = self.state_modify_check(
-            name, self.state[name] + delta
-        )
+        self.state[name] = self.state_modify_check(name, self.state[name] + delta)
         new_desc = self.state_desc(name)
 
         if delta > 0:
@@ -107,7 +117,9 @@ class Plugin(BasePlugin):
             base_text = f'Your "{name}" state value decreased.'
 
         if new_desc != prev_desc:
-            extra_text = f'Your "{name}" state changes from "{prev_desc}" to "{new_desc}"'
+            extra_text = (
+                f'Your "{name}" state changes from "{prev_desc}" to "{new_desc}"'
+            )
         else:
             extra_text = ""
 

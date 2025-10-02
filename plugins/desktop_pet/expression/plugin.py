@@ -1,10 +1,13 @@
 from framework.plugin import BasePlugin
-from framework.agent import InvokeStartEvent, InvokeEndEvent, PluginFieldEvent
+from framework.agent import InvokeStartEvent, InvokeEndEvent, MarkerEvent
 from framework.event import Event
 from dataclasses import dataclass
 import pathlib
 import time
-from plugins.desktop_pet.pet_state.plugin import Plugin as PetStatePlugin, ModifyPetStateEvent
+from plugins.desktop_pet.pet_state.plugin import (
+    Plugin as PetStatePlugin,
+    ModifyPetStateEvent,
+)
 from PySide6.QtCore import QTimer
 
 
@@ -23,13 +26,13 @@ class Plugin(BasePlugin):
 
         self.last_update_time = time.time()
         self.clear_expression_timer: QTimer | None = None
-        
+
     def on_dep_load(self, dep):
         if isinstance(dep, PetStatePlugin):
             self.state = dep.state
 
     def prompts(self):
-        return {"json_fields": self.root_dir() / "expression_field.md"}
+        return {"marker": self.root_dir() / "expression_marker.md"}
 
     def infos(self):
         return {
@@ -70,14 +73,14 @@ class Plugin(BasePlugin):
             return True
         return False
 
-
     def on_event(self, event):
         match event:
             case ModifyPetStateEvent():
                 if self.refresh_normal_expression():
                     self.try_set_expression()
-            case PluginFieldEvent("expression", {"type": t, "duration": d}):
-                self.current_expression = (t, d)
+            case MarkerEvent("expression", data):
+                d, t = data.split(",")
+                self.current_expression = (d, t)
                 self.try_set_expression()
             case InvokeStartEvent():
                 if (
@@ -93,4 +96,3 @@ class Plugin(BasePlugin):
                 ):
                     self.current_expression = None
                     self.try_set_expression()
-

@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, ClassVar, Self, Never, Callable, Sequence
 import asyncio
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_core.tools import BaseTool
 import threading
 
@@ -15,16 +15,17 @@ class Event(ABC):
     def name(self):
         return self.__class__.__name__
 
-    def agent_msg(self) -> BaseMessage | Sequence[BaseMessage] | None:
+    def agent_msg(self) -> HumanMessage | Sequence[HumanMessage] | None:
         return None
 
 
 class InvokeStartEvent(Event):
     pass
 
-
+@dataclass
 class InvokeEndEvent(Event):
-    pass
+    input_msgs: list[BaseMessage]
+    new_msgs: list[BaseMessage]
 
 
 @dataclass
@@ -35,7 +36,7 @@ class PluginFieldEvent(Event):
 
 @dataclass
 class PlainEvent(Event):
-    content: str | BaseMessage | Sequence[str | BaseMessage]
+    content: HumanMessage | Sequence[HumanMessage]
 
     def agent_msg(self):
         return self.content
@@ -58,7 +59,9 @@ class Task(ABC):
     def execute_info(self) -> str | None:
         return None
 
-    def merge(self, old_task: Self) -> tuple[Self, BaseMessage | None] | tuple[None, None] | Never:
+    def merge(
+        self, old_task: Self
+    ) -> tuple[Self, HumanMessage | None] | tuple[None, None] | Never:
         raise
 
     def on_event(self, event: Event):
@@ -69,7 +72,7 @@ class Task(ABC):
 class NewTaskEvent(Event):
     old_task: Task | None
     new_task: Task
-    msg: BaseMessage | None
+    msg: HumanMessage | None
 
     def agent_msg(self):
         return self.msg

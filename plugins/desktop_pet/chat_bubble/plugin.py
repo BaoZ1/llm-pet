@@ -1,6 +1,6 @@
 from framework.event import InvokeStartEvent, InvokeEndEvent
 from framework.plugin import BasePlugin
-from framework.agent import UserInputEvent
+from framework.agent import UserInputEvent, SpeakEvent
 from framework.window import (
     TransparentWindow,
     set_bubble,
@@ -13,8 +13,6 @@ import math
 from PySide6.QtCore import Qt, QObject, QEvent, Signal, QTimer
 from PySide6.QtGui import QMouseEvent, QKeyEvent, QFocusEvent, QFont
 from PySide6.QtWidgets import QTextEdit, QVBoxLayout, QLayout, QLabel
-
-from plugins.speak.plugin import SpeakEvent
 
 
 class ClickEventFilter(QObject):
@@ -115,6 +113,9 @@ class TextBubble(TransparentWindow):
         layout.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)
 
         self.loading = False
+        
+        self.concated_text = ""
+        self.msg_id = None
 
         self.hide()
         self.hide_timer = QTimer()
@@ -132,12 +133,16 @@ class TextBubble(TransparentWindow):
 
         self.show()
 
-    def show_message(self, text):
+    def show_message(self, text: str, msg_id: str):
         self.loading = False
 
         self.hide_timer.stop()
 
-        self.label.setText(text)
+        if self.msg_id != msg_id:
+            self.msg_id = msg_id
+            self.concated_text = ""
+        self.concated_text += text
+        self.label.setText(self.concated_text)
         self.adjustSize()
 
         self.show()
@@ -202,8 +207,8 @@ class Plugin(BasePlugin):
         match e:
             case InvokeStartEvent():
                 self.text_bubble.show_loading()
-            case SpeakEvent(text):
-                self.text_bubble.show_message(text)
+            case SpeakEvent(text, msg_id):
+                self.text_bubble.show_message(text, msg_id)
             case InvokeEndEvent():
                 self.text_bubble.stop_loading()
 

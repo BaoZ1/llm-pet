@@ -1,4 +1,5 @@
 {
     "identity_description": "你是一个AI桌面助手，位于用户的电脑桌面上。你需要对来自系统或用户的消息做出响应",
-    "json_fields": ""
+    "special_identifier": "",
+    "extra_rule": ""
 }

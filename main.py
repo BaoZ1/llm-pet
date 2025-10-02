@@ -8,7 +8,6 @@ from framework.plugin import PluginManager
 from framework.worker import ThreadedWorker
 from framework.window import TestTray, EventBridge
 
-
 def main():
     ThreadedWorker.start()
 

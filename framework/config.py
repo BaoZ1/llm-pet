@@ -4,6 +4,7 @@ from typing import (
     _TypedDict,
     Annotated,
     ClassVar,
+    TypedDict,
     cast,
     get_args,
     get_origin,
@@ -11,7 +12,7 @@ from typing import (
 )
 import yaml
 from pathlib import Path
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, field, is_dataclass
 from PySide6.QtCore import Qt, Signal, SignalInstance
 from PySide6.QtWidgets import (
     QWidget,
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QFileDialog,
 )
+from langchain_openai import ChatOpenAI
 
 
 yaml.add_multi_representer(
@@ -43,14 +45,30 @@ class BaseConfig:
     enabled: bool = False
 
 
+class ModelConfig(TypedDict):
+    base_url: str
+    api_key: str
+    model: str
+    extra_config: dict[str, str | bool | int | float] | None
+
+
+def create_model(cfg: ModelConfig):
+    return ChatOpenAI(
+        base_url=cfg["base_url"],
+        api_key=cfg["api_key"],
+        model=cfg["model"],
+    )
+
+
 @dataclass
 class GlobalConfig:
     instance: ClassVar[GlobalConfig | None] = None
     path: ClassVar[Path] = Path("config.yaml")
-    
-    base_url: str = ""
-    api_key: str = ""
-    model: str = ""
+
+    main_model: ModelConfig = field(
+        default_factory=lambda: ModelConfig(base_url="", api_key="", model="", extra_config=None)
+    )
+    enable_revision: bool = False
 
     @classmethod
     def load(cls):
@@ -60,19 +78,25 @@ class GlobalConfig:
         else:
             cls.save(GlobalConfig())
             cls.load()
-        
+
     @classmethod
     def get(cls):
         if cls.instance is None:
             cls.load()
         return cls.instance
-        
+
     @classmethod
     def save(cls, config: GlobalConfig):
         if config == cls.instance:
             return
         cls.path.write_text(yaml.dump(config.__dict__, sort_keys=False), "utf-8")
         cls.instance = config
+
+
+@dataclass
+class DataclassType:
+    pass
+
 
 class TypeFieldEdit[T]:
     edits: ClassVar[dict[type, type[TypeFieldEdit]]] = {}
@@ -95,6 +119,10 @@ class TypeFieldEdit[T]:
         if idx_t not in TypeFieldEdit.edits:
             if is_typeddict(idx_t):
                 return TypeFieldEdit.edits[_TypedDict]().with_type(
+                    t, comment, extra_args
+                )
+            elif is_dataclass(idx_t):
+                return TypeFieldEdit.edits[DataclassType]().with_type(
                     t, comment, extra_args
                 )
             elif issubclass(idx_t, Path):
@@ -415,6 +443,44 @@ class TypedDictFieldEdit(QWidget, TypeFieldEdit[_TypedDict]):
             cast(
                 TypeFieldEdit, self.layout().itemAt(i).layout().itemAt(1).widget()
             ).set_value(value[k])
+
+
+class DataclassFieldEdit(QWidget, TypeFieldEdit[DataclassType]):
+    changed = Signal()
+
+    def init(self):
+        layout = QVBoxLayout()
+        layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetFixedSize)
+
+        for field in fields(self.t):
+            field_layout = QHBoxLayout()
+
+            name_label = QLabel(field.name)
+            field_layout.addWidget(name_label)
+
+            field_type = eval(field.type) if isinstance(field.type, str) else field.type
+            field_edit = TypeFieldEdit.create(field_type)
+            field_layout.addWidget(field_edit)
+
+            layout.addLayout(field_layout)
+
+            field_edit.changed.connect(self.changed.emit)
+
+        self.setLayout(layout)
+
+    def get_value(self):
+        d = {}
+        for i, field in enumerate(fields(self.t)):
+            d[field.name] = cast(
+                TypeFieldEdit, self.layout().itemAt(i).layout().itemAt(1).widget()
+            ).get_value()
+        return self.t(**d)
+
+    def set_value(self, value):
+        for i, field in enumerate(fields(self.t)):
+            cast(
+                TypeFieldEdit, self.layout().itemAt(i).layout().itemAt(1).widget()
+            ).set_value(getattr(value, field.name))
 
 
 class UnionFieldEdit(QWidget, TypeFieldEdit[UnionType]):

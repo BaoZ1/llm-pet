@@ -13,6 +13,10 @@ from .worker import ThreadedWorker
 from .event import Task, Event, TaskManager, PluginRefreshEvent
 
 
+MARKER_BEGIN = "[:"
+MARKER_END = ":]"
+
+
 class PluginTypeBase:
     pass
 
@@ -216,7 +220,12 @@ class PluginManager:
         )
 
     @classmethod
-    def refresh_agent_data(cls):
+    def create_system_prompt(cls):
+        prompt_variables = {
+            "marker_begin": MARKER_BEGIN,
+            "marker_end": MARKER_END,
+        }
+
         prompt_folder = pathlib.Path("prompts/zh-CN")
         with (
             (prompt_folder / "template.md").open(encoding="utf-8") as t_f,
@@ -226,7 +235,6 @@ class PluginManager:
             prompt_comps: dict[str, str] = json.load(d_f)
 
         plugin_prompt_comps: list[dict[str, str]] = []
-        tools: list[BaseTool] = []
         for p in cls.loaded_plugins():
             str_prompts: dict[str, str] = {}
             for key, data in p.prompts().items():
@@ -235,12 +243,21 @@ class PluginManager:
                 elif isinstance(data, pathlib.Path):
                     str_prompts[key] = data.read_text("utf-8")
             plugin_prompt_comps.append(str_prompts)
-            tools.extend(t(p).langchain_wrap() for t in p.tools())
 
         prompt_comps |= cls.merge_str_dict(plugin_prompt_comps)
         for k, v in prompt_comps.items():
             prompt_template = prompt_template.replace(f"{{{{{k}}}}}", v)
-        system_prompt = prompt_template
+        for k, v in prompt_variables.items():
+            prompt_template = prompt_template.replace(f"{{{{{k}}}}}", v)
+        return prompt_template
+
+    @classmethod
+    def refresh_agent_data(cls):
+        system_prompt = cls.create_system_prompt()
+
+        tools: list[BaseTool] = []
+        for p in cls.loaded_plugins():
+            tools.extend(t(p).langchain_wrap() for t in p.tools())
 
         cls.trigger_event(PluginRefreshEvent(system_prompt, tools))
 
