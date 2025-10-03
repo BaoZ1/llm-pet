@@ -1,7 +1,17 @@
-from __future__ import annotations
+from pathlib import Path
+from framework.plugin import BasePlugin, PluginManager
+from framework.worker import ThreadedWorker
+from framework.config import BaseConfig
+from framework.event import (
+    PluginRefreshEvent,
+    Event,
+    TaskManager,
+    InvokeStartEvent,
+    InvokeEndEvent,
+)
+
 from enum import Enum, auto
-import json
-from typing import Any, TypedDict, Annotated, ClassVar, Sequence, cast
+from typing import TypedDict, Annotated, Sequence, cast
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import BaseTool
 from langchain_core.messages import (
@@ -9,7 +19,6 @@ from langchain_core.messages import (
     SystemMessage,
     HumanMessage,
     AIMessage,
-    AIMessageChunk,
     ToolMessage,
 )
 from langgraph.graph import StateGraph, START, END
@@ -18,43 +27,6 @@ from langgraph.types import Command
 import operator
 import asyncio
 from dataclasses import dataclass, field
-from .event import (
-    PluginRefreshEvent,
-    Event,
-    TaskManager,
-    InvokeStartEvent,
-    InvokeEndEvent,
-)
-from .plugin import PluginManager
-from .worker import ThreadedWorker
-from .config import GlobalConfig
-
-
-class ChatCustom(ChatOpenAI):
-    def _convert_chunk_to_generation_chunk(
-        self, chunk, default_chunk_class, base_generation_info
-    ):
-        gc = super()._convert_chunk_to_generation_chunk(
-            chunk, default_chunk_class, base_generation_info
-        )
-        choices = chunk.get("choices", []) or chunk.get("chunk", {}).get("choices", [])
-        if len(choices) > 0:
-            choice = choices[0]
-            if delta := choice["delta"]:
-                if rc := delta.get("reasoning_content"):
-                    gc.message.additional_kwargs["reasoning_content"] = rc
-        return gc
-
-    def _get_request_payload(self, input_, *, stop=None, **kwargs):
-        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
-        messages = self._convert_input(input_).to_messages()
-        if messages:
-            last_msg = messages[-1]
-            if isinstance(last_msg, AIMessage) and last_msg.additional_kwargs.get(
-                "partial", False
-            ):
-                payload["messages"][-1]["partial"] = True
-        return payload
 
 
 def clearable_add(a: list, b: list | None):
@@ -117,7 +89,6 @@ class UserInputEvent(Event):
 
     def agent_msg(self):
         parts = []
-        print(f"[image count] {len(self.images)}\n")
         for image in self.images:
             parts.append(
                 {
@@ -224,35 +195,15 @@ class StreamMarkerParser:
 
 
 class Agent:
-    instance: ClassVar[Agent] | None = None
-
-    def __init__(
-        self,
-        base_url: str,
-        api_key: str,
-        model: str,
-        extra_config: dict | None,
-        system_prompt: str,
-        tools: Sequence[BaseTool],
-    ):
+    def __init__(self, base_model: ChatOpenAI, enable_revision: bool):
         self.state = State(
             presistent_messages=[],
             input_messages=[],
             revision_data=[],
         )
 
-        self.base_model = ChatOpenAI(
-            base_url=base_url,
-            api_key=api_key,
-            model=model,
-            temperature=0.6,
-            frequency_penalty=1.0,
-            extra_body=extra_config,
-        )
-        self.model = self.base_model.bind_tools(tools)
-
-        self.decide_model_prompt = SystemMessage(system_prompt)
-        self.graph = self.create_graph(tools)
+        self.base_model = base_model
+        self.enable_revision = enable_revision
 
         self.message_queue = asyncio.Queue()
 
@@ -260,28 +211,21 @@ class Agent:
 
         self.task: asyncio.Task = None
 
-    @classmethod
-    def init(cls, system_prompt: str, tools: Sequence[BaseTool]):
-        with open("test_concated_prompt.md", "w", encoding="utf-8") as f:
-            f.write(system_prompt)
-        if cls.instance is not None:
-            if cls.instance.task is not None:
-                cls.instance.task.cancel()
-            ThreadedWorker.submit_task(TaskManager.remove_callback, "agent")
-        model_cfg = GlobalConfig.get().main_model
-        new_instance = Agent(
-            model_cfg["base_url"],
-            model_cfg["api_key"],
-            model_cfg["model"],
-            model_cfg["extra_config"],
-            system_prompt,
-            tools,
-        )
-        cls.instance = new_instance
-        new_instance.task = ThreadedWorker.loop.create_task(new_instance.run())
-        ThreadedWorker.submit_task(
-            TaskManager.register_callback, "agent", new_instance.on_event
-        )
+    def start(self, system_prompt: str, tools: Sequence[BaseTool]):
+        if self.task is not None:
+            self.stop()
+
+        self.model = self.base_model.bind_tools(tools)
+
+        self.decide_model_prompt = SystemMessage(system_prompt)
+        self.graph = self.create_graph(tools)
+
+        self.task = ThreadedWorker.loop.create_task(self.run())
+
+    def stop(self):
+        if self.task is not None:
+            self.task.cancel()
+            self.task = None
 
     async def preprocess(self, state: State):
         TaskManager.trigger_event(InvokeStartEvent())
@@ -334,7 +278,7 @@ class Agent:
         return {"response": msg}
 
     async def revision(self, state: State):
-        if not GlobalConfig.get().enable_revision:
+        if not self.enable_revision:
             return Command(
                 goto="pass_revision",
                 update={
@@ -412,9 +356,7 @@ class Agent:
 
         if msg.artifact:
             if isinstance(msg.artifact, HumanMessage):
-                return {
-                    "new_messages": [msg.artifact]
-                }
+                return {"new_messages": [msg.artifact]}
 
     async def postprocess(self, state: State):
         new_presistent_messages = [
@@ -480,15 +422,6 @@ class Agent:
             concated_msgs.append(HumanMessage(last_human_msg_data))
         return concated_msgs
 
-    def on_event(self, e: Event):
-        msgs = e.agent_msg()
-        if msgs:
-            if isinstance(msgs, HumanMessage):
-                msgs = [msgs]
-            for msg in msgs:
-                # print(f"[put message] {type(e)} {type(msg)} {msg}\n")
-                self.message_queue.put_nowait(msg)
-
     async def run(self):
         try:
             while True:
@@ -508,7 +441,45 @@ class Agent:
         except asyncio.CancelledError:
             pass
 
-    @classmethod
-    def class_on_event(cls, e):
-        if isinstance(e, PluginRefreshEvent):
-            cls.init(e.sys_prompt, e.tools)
+
+@dataclass
+class Config(BaseConfig):
+    base_url: str = ""
+    api_key: str = ""
+    model: str = ""
+    temperature: float = 0.6
+    frequency_penalty: float = 1.0
+    extra_config: dict[str, str | bool | int | float] | None = None
+    enable_revision: bool = False
+
+
+class Plugin(BasePlugin):
+    def init(self):
+        config = cast(Config, self.get_config())
+        self.agent = Agent(
+            ChatOpenAI(
+                base_url=config.base_url,
+                api_key=config.api_key,
+                model=config.model,
+                temperature=config.temperature,
+                frequency_penalty=config.frequency_penalty,
+                extra_body=config.extra_config,
+            ),
+            config.enable_revision,
+        )
+        
+    def clear(self):
+        self.agent.stop()
+
+    def on_event(self, e):
+        msgs = e.agent_msg()
+        if msgs:
+            if isinstance(msgs, HumanMessage):
+                msgs = [msgs]
+            for msg in msgs:
+                # print(f"[put message] {type(e)} {type(msg)} {msg}\n")
+                self.agent.message_queue.put_nowait(msg)
+
+        match e:
+            case PluginRefreshEvent(prompt, tools):
+                self.agent.start(prompt, tools)

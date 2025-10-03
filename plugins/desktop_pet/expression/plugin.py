@@ -1,5 +1,5 @@
 from framework.plugin import BasePlugin
-from framework.agent import InvokeStartEvent, InvokeEndEvent, MarkerEvent
+from plugins.core.plugin import InvokeStartEvent, InvokeEndEvent, MarkerEvent
 from framework.event import Event
 from dataclasses import dataclass
 import pathlib

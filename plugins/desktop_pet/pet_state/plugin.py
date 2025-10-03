@@ -1,20 +1,8 @@
-from __future__ import annotations
-from framework.plugin import BasePlugin, Tool
-from framework.config import BaseConfig, GlobalConfig, ModelConfig, create_model
+from framework.plugin import BasePlugin
 from framework.event import Event, PlainEvent
-from framework.agent import InvokeEndEvent, MarkerEvent
-from framework.worker import ThreadedWorker
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import (
-    SystemMessage,
-    BaseMessage,
-    HumanMessage,
-    ToolMessage,
-    AIMessage,
-)
-from typing import TypedDict, cast
+from plugins.core.plugin import MarkerEvent
+from typing import TypedDict
 from dataclasses import dataclass
-import pathlib
 
 
 class PetState(TypedDict):

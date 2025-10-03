@@ -44,55 +44,6 @@ yaml.add_constructor(
 class BaseConfig:
     enabled: bool = False
 
-
-class ModelConfig(TypedDict):
-    base_url: str
-    api_key: str
-    model: str
-    extra_config: dict[str, str | bool | int | float] | None
-
-
-def create_model(cfg: ModelConfig):
-    return ChatOpenAI(
-        base_url=cfg["base_url"],
-        api_key=cfg["api_key"],
-        model=cfg["model"],
-    )
-
-
-@dataclass
-class GlobalConfig:
-    instance: ClassVar[GlobalConfig | None] = None
-    path: ClassVar[Path] = Path("config.yaml")
-
-    main_model: ModelConfig = field(
-        default_factory=lambda: ModelConfig(base_url="", api_key="", model="", extra_config=None)
-    )
-    enable_revision: bool = False
-
-    @classmethod
-    def load(cls):
-        if cls.path.exists():
-            config_dict = yaml.load(cls.path.read_text("utf-8"), yaml.Loader)
-            cls.instance = GlobalConfig(**config_dict)
-        else:
-            cls.save(GlobalConfig())
-            cls.load()
-
-    @classmethod
-    def get(cls):
-        if cls.instance is None:
-            cls.load()
-        return cls.instance
-
-    @classmethod
-    def save(cls, config: GlobalConfig):
-        if config == cls.instance:
-            return
-        cls.path.write_text(yaml.dump(config.__dict__, sort_keys=False), "utf-8")
-        cls.instance = config
-
-
 @dataclass
 class DataclassType:
     pass

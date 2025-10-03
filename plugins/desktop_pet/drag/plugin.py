@@ -2,7 +2,7 @@ from typing import cast
 from framework.plugin import BasePlugin
 from framework.config import BaseConfig
 from framework.event import Event, Task
-from framework.agent import EventMessage
+from plugins.core.plugin import EventMessage
 from plugins.desktop_pet.pet import PetPluginBase
 from dataclasses import dataclass
 import asyncio

@@ -165,7 +165,11 @@ class PluginManager:
         for plugin_class in cls.plugin_classes:
             if plugin_class.get_config().enabled:
                 if cls.check_deps(plugin_class):
-                    plugin_class.load()
+                    try:
+                        plugin_class.load()
+                    except Exception as e:
+                        print(e)
+                        plugin_class.unload()
         cls.refresh_agent_data()
 
     @classmethod

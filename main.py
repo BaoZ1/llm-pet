@@ -3,15 +3,13 @@ import sys
 sys.pycache_prefix = "__pycache__"
 
 from PySide6.QtWidgets import QApplication
-from framework.agent import Agent, TaskManager
+from framework.event import TaskManager
 from framework.plugin import PluginManager
 from framework.worker import ThreadedWorker
 from framework.window import TestTray, EventBridge
 
 def main():
     ThreadedWorker.start()
-
-    TaskManager.register_callback("agent_class", Agent.class_on_event)
 
     app = QApplication([])
     app.setQuitOnLastWindowClosed(False)

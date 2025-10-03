@@ -1,6 +1,6 @@
 from framework.plugin import BasePlugin, Tool
 from framework.event import Event, Task, TaskManager
-from framework.agent import EventMessage
+from plugins.core.plugin import EventMessage
 from plugins.desktop_pet.pet import PetPluginBase
 import asyncio
 from dataclasses import dataclass

@@ -2,7 +2,7 @@ import base64
 from pathlib import Path
 from framework.event import InvokeStartEvent, InvokeEndEvent
 from framework.plugin import BasePlugin
-from framework.agent import UserInputEvent, SpeakEvent
+from plugins.core.plugin import UserInputEvent, SpeakEvent
 from framework.window import (
     TransparentWindow,
     set_bubble,
