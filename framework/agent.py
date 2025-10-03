@@ -17,14 +17,13 @@ from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
 import operator
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from .event import (
     PluginRefreshEvent,
     Event,
     TaskManager,
     InvokeStartEvent,
     InvokeEndEvent,
-    PluginFieldEvent,
 )
 from .plugin import PluginManager
 from .worker import ThreadedWorker
@@ -74,8 +73,14 @@ class State(TypedDict):
 
 
 class UserMessage(HumanMessage):
-    def __init__(self, content: str):
-        super().__init__(f"[User Input] {content}")
+    def __init__(self, content: str | list[dict]):
+        if isinstance(content, str):
+            super().__init__(f"[User Input] {content}")
+        else:
+            for d in content:
+                if d["type"] == "text":
+                    d["text"] = f"[User Input] {d["text"]}"
+            super().__init__(content)
 
 
 class EventMessage(HumanMessage):
@@ -107,10 +112,29 @@ class RevisionMessage(HumanMessage):
 @dataclass
 class UserInputEvent(Event):
     tags = ["user"]
-    content: str
+    text: str = ""
+    images: list[str] = field(default_factory=list)
 
     def agent_msg(self):
-        return UserMessage(self.content)
+        parts = []
+        print(f"[image count] {len(self.images)}\n")
+        for image in self.images:
+            parts.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": image,
+                    },
+                }
+            )
+        if self.text:
+            parts.append(
+                {
+                    "type": "text",
+                    "text": self.text,
+                }
+            )
+        return UserMessage(parts)
 
 
 @dataclass
@@ -266,7 +290,7 @@ class Agent:
         while not self.message_queue.empty():
             new_msg = self.message_queue.get_nowait()
             messages.append(new_msg)
-            print(f"[add message] {type(new_msg)} {new_msg}\n")
+            # print(f"[add message] {type(new_msg)} {new_msg}\n")
 
         return {
             "input_messages": messages,
@@ -299,7 +323,11 @@ class Agent:
         #         msg = chunk
         #     else:
         #         msg += chunk
-        msg = await self.model.ainvoke(input_msgs)
+        try:
+            msg = await self.model.ainvoke(input_msgs)
+        except Exception as e:
+            print(e)
+            # print(state["new_messages"])
 
         print(f"[invoke] {msg}\n")
 
@@ -329,15 +357,22 @@ class Agent:
             state["input_messages"] + state["new_messages"] + [state["response"]]
         ):
             if isinstance(msg, AIMessage):
-                content = "[AI] " + msg.content.strip()
+                content_parts = ["[AI] " + msg.content.strip()]
                 for tc in msg.tool_calls:
-                    content += f"\n<tool call: {tc['name']}>"
+                    content_parts.append(f"\n<tool call: {tc['name']}>")
+                content = "\n".join(content_parts)
             elif isinstance(msg, HumanMessage):
-                content = msg.content
+                content_parts = []
+                for c in msg.content:
+                    if c["type"] == "text":
+                        content_parts.append(c["text"])
+                    elif c["type"] == "image_url":
+                        content_parts.append("<image>")
+                content = "\n".join(content_parts)
             elif isinstance(msg, ToolMessage):
                 content = "[Tool] ..."
             msgs.append(content)
-        input_msgs.append(HumanMessage("\n".join(msgs)))
+        input_msgs.append(HumanMessage("\n\n".join(msgs)))
 
         ret = await self.base_model.ainvoke(input_msgs)
         print(f"[revision] {ret}\n")
@@ -371,6 +406,16 @@ class Agent:
             return True
         return False
 
+    async def process_artifact(self, state: State):
+        msg = state["new_messages"][-1]
+        assert isinstance(msg, ToolMessage)
+
+        if msg.artifact:
+            if isinstance(msg.artifact, HumanMessage):
+                return {
+                    "new_messages": [msg.artifact]
+                }
+
     async def postprocess(self, state: State):
         new_presistent_messages = [
             msg for msg in state["input_messages"] if isinstance(msg, UserMessage)
@@ -398,6 +443,7 @@ class Agent:
         builder.add_node("revision", self.revision)
         builder.add_node("pass_revision", self.pass_revision)
         builder.add_node("tools", ToolNode(tools, messages_key="new_messages"))
+        builder.add_node("artifact", self.process_artifact)
         builder.add_node("postprocess", self.postprocess)
 
         builder.add_edge(START, "preprocess")
@@ -407,7 +453,8 @@ class Agent:
         builder.add_conditional_edges(
             "pass_revision", self.tool_check, {True: "tools", False: "postprocess"}
         )
-        builder.add_edge("tools", "info")
+        builder.add_edge("tools", "artifact")
+        builder.add_edge("artifact", "info")
         builder.add_edge("postprocess", END)
 
         return builder.compile()
@@ -415,17 +462,22 @@ class Agent:
     @staticmethod
     def concat_msgs(msgs: Sequence[BaseMessage]):
         concated_msgs: list[BaseMessage] = []
-        last_msg_data: list[str] = []
+        last_human_msg_data: list[dict] = []
         for msg in msgs:
             if isinstance(msg, HumanMessage):
-                last_msg_data.append(msg.content)
+                if isinstance(msg.content, str):
+                    last_human_msg_data.append({"type": "text", "text": msg.content})
+                elif isinstance(msg.content, list):
+                    last_human_msg_data.extend(msg.content)
+                else:
+                    raise Exception("unknown content type:", type(msg.content))
             else:
-                if len(last_msg_data) != 0:
-                    concated_msgs.append(HumanMessage("\n\n".join(last_msg_data)))
-                    last_msg_data.clear()
+                if len(last_human_msg_data) != 0:
+                    concated_msgs.append(HumanMessage(last_human_msg_data))
+                    last_human_msg_data.clear()
                 concated_msgs.append(msg)
-        if len(last_msg_data) != 0:
-            concated_msgs.append(HumanMessage("\n\n".join(last_msg_data)))
+        if len(last_human_msg_data) != 0:
+            concated_msgs.append(HumanMessage(last_human_msg_data))
         return concated_msgs
 
     def on_event(self, e: Event):
@@ -434,7 +486,7 @@ class Agent:
             if isinstance(msgs, HumanMessage):
                 msgs = [msgs]
             for msg in msgs:
-                print(f"[put message] {type(e)} {type(msg)} {msg}\n")
+                # print(f"[put message] {type(e)} {type(msg)} {msg}\n")
                 self.message_queue.put_nowait(msg)
 
     async def run(self):

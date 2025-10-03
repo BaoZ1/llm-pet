@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 from typing import Self, Sequence, cast
 from enum import Enum, auto
 from .agent import Event
-from .config import BaseConfig, ConfigEdit
+from .config import BaseConfig, ConfigEdit, GlobalConfig
 from .plugin import BasePlugin, PluginManager, PluginTypeBase
 import sys
 import os
@@ -311,7 +311,7 @@ class SinglePluginCollapsibleWidget(QWidget):
         self.title_widget.clicked.connect(self.toggle)
         self.animation = QPropertyAnimation(self.config_area, "maximumHeight".encode())
         self.animation.setDuration(100)
-        
+
     def save(self):
         self.plugin_class.update_config(self.config_widget.get())
 
@@ -377,6 +377,85 @@ class SinglePluginCollapsibleWidget(QWidget):
     def load(self, config: BaseConfig):
         self.config_widget.load(config)
         self.refresh_display()
+
+
+class GlobalConfigCollapsibleWidget(QWidget):
+    expanded = Signal(QWidget)
+
+    def __init__(self):
+        super().__init__()
+
+        layout = QVBoxLayout()
+
+        self.title_widget = QToolButton(autoRaise=True)
+        self.title_widget.setText("Global Config")
+        self.title_widget.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self.title_widget.setArrowType(Qt.ArrowType.RightArrow)
+        self.title_widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        layout.addWidget(self.title_widget)
+
+        self.config_area = DynamicScrollArea()
+        self.config_area.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.config_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.config_area.setSizePolicy(
+            QSizePolicy.Policy.MinimumExpanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        self.config_area.setMinimumHeight(0)
+        self.config_area.setMaximumHeight(0)
+
+        scroll_content_widget = QWidget()
+        scroll_layout = QVBoxLayout()
+        scroll_layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetMinimumSize)
+
+        self.config_widget = ConfigEdit(GlobalConfig)
+        self.config_widget.setSizePolicy(
+            QSizePolicy.Policy.MinimumExpanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        scroll_layout.addWidget(self.config_widget)
+
+        scroll_content_widget.setLayout(scroll_layout)
+
+        self.config_area.setWidget(scroll_content_widget)
+        layout.addWidget(self.config_area)
+
+        self.setLayout(layout)
+
+        self.expand = False
+        self.title_widget.clicked.connect(self.toggle)
+        self.animation = QPropertyAnimation(self.config_area, "maximumHeight".encode())
+        self.animation.setDuration(100)
+
+    def save(self):
+        GlobalConfig.save(self.config_widget.get())
+
+    def toggle(self):
+        self.expand = not self.expand
+
+        if self.expand:
+            self.title_widget.setArrowType(Qt.ArrowType.DownArrow)
+            body_height = self.config_area.sizeHint().height()
+            self.animation.setStartValue(0)
+            self.animation.setEndValue(min(body_height, 400))
+            self.expanded.emit(self)
+        else:
+            self.title_widget.setArrowType(Qt.ArrowType.RightArrow)
+            self.animation.setStartValue(self.config_area.height())
+            self.animation.setEndValue(0)
+        self.animation.start()
+
+    def load(self):
+        self.config_widget.load(GlobalConfig.get())
 
 
 class PluginConfigWindow(QWidget):

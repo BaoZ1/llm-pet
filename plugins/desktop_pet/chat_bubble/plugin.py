@@ -1,3 +1,5 @@
+import base64
+from pathlib import Path
 from framework.event import InvokeStartEvent, InvokeEndEvent
 from framework.plugin import BasePlugin
 from framework.agent import UserInputEvent, SpeakEvent
@@ -11,8 +13,19 @@ from framework.window import (
 from plugins.desktop_pet.pet import PetPluginBase
 import math
 from PySide6.QtCore import Qt, QObject, QEvent, Signal, QTimer
-from PySide6.QtGui import QMouseEvent, QKeyEvent, QFocusEvent, QFont
-from PySide6.QtWidgets import QTextEdit, QVBoxLayout, QLayout, QLabel
+from PySide6.QtGui import QMouseEvent, QKeyEvent, QFocusEvent, QFont, QPixmap, QImage
+from PySide6.QtWidgets import (
+    QApplication,
+    QTextEdit,
+    QFileDialog,
+    QPushButton,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLayout,
+    QLabel,
+)
+from io import BytesIO
+from PIL import Image
 
 
 class ClickEventFilter(QObject):
@@ -36,16 +49,24 @@ class ClickEventFilter(QObject):
 
 
 class InputBubble(TransparentWindow):
-    text_submitted = Signal(str)
+    input_submitted = Signal(str, list)
 
     def __init__(self):
         super().__init__()
 
         layout = QVBoxLayout(self)
-        self.text_edit = QTextEdit()
-        layout.addWidget(self.text_edit)
-        layout.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)
 
+        input_layout = QHBoxLayout()
+        input_layout
+
+        self.images_layout = QHBoxLayout()
+        self.images_layout.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)
+        self.images_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self.image_labels: list[QLabel] = []
+
+        layout.addLayout(self.images_layout)
+
+        self.text_edit = QTextEdit()
         self.text_edit.setStyleSheet(
             """
             background-color: white;
@@ -54,14 +75,57 @@ class InputBubble(TransparentWindow):
             padding: 5px;
         """
         )
+        input_layout.addWidget(self.text_edit)
+
+        self.image_btn = QPushButton("Img")
+        input_layout.addWidget(self.image_btn)
+
+        layout.addLayout(input_layout)
+
+        self.images = []
+        self.image_btn.installEventFilter(self)
+        self.image_btn.clicked.connect(self.select_image)
 
         self.update_size()
         self.text_edit.installEventFilter(self)
         self.text_edit.document().contentsChanged.connect(self.update_size)
 
+    def select_image(self):
+        dialog = QFileDialog(self)
+        if dialog.exec():
+            p = dialog.selectedFiles()[0]
+            img = Image.open(p).convert("RGB")
+
+            buffer = BytesIO()
+            img.save(buffer, "JPEG", quality=85)
+
+            img_bytes = buffer.getvalue()
+            base64_string = base64.b64encode(img_bytes).decode("utf-8")
+
+            self.images.append(f"data:image/jpeg;base64,{base64_string}")
+
+            qp = QPixmap()
+            qp.loadFromData(img_bytes)
+            img_label = QLabel(pixmap=qp)
+            img_label.setScaledContents(True)
+            img_label.setFixedSize(50, 50)
+            self.image_labels.append(img_label)
+            self.images_layout.addWidget(img_label)
+            img_label.installEventFilter(self)
+
     def showEvent(self, event):
         self.activateWindow()
         self.text_edit.setFocus()
+
+    def clear(self):
+        self.text_edit.clear()
+        self.images.clear()
+
+        for label in self.image_labels:
+            self.images_layout.takeAt(0)
+            label.hide()
+            label.deleteLater()
+        self.image_labels.clear()
 
     def update_size(self):
         new_height = (
@@ -71,20 +135,53 @@ class InputBubble(TransparentWindow):
         )
         self.text_edit.setFixedHeight(min(new_height, 400))
 
-    def eventFilter(self, watched, event):
+    def handel_text_edit_event(self, event):
         if isinstance(event, QFocusEvent):
-            if event.type() == QEvent.Type.FocusOut:
-                self.text_edit.clear()
+            if event.type() == QEvent.Type.FocusOut and QApplication.focusWidget() != self.image_btn:
+                self.clear()
                 self.hide()
         elif isinstance(event, QKeyEvent):
-            if event.key() == Qt.Key.Key_Return and event.type() == QEvent.Type.KeyPress:
+            if (
+                event.key() == Qt.Key.Key_Return
+                and event.type() == QEvent.Type.KeyPress
+            ):
                 if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
                     self.text_edit.insertPlainText("\n")
                 else:
-                    self.text_submitted.emit(self.text_edit.toPlainText().strip())
-                    self.text_edit.clear()
+                    self.input_submitted.emit(
+                        self.text_edit.toPlainText().strip(), self.images
+                    )
+                    self.clear()
                     self.hide()
                 return True
+        return False
+
+    def handel_images_btn_event(self, event: QEvent):
+        if event.type() == QEvent.Type.WindowUnblocked:
+            self.text_edit.setFocus()
+        return False
+
+    def handel_image_label_event(self, label: QLabel, event: QEvent):
+        if isinstance(event, QMouseEvent):
+            if event.type() == QEvent.Type.MouseButtonPress:
+                if event.button() == Qt.MouseButton.LeftButton:
+                    pass
+                elif event.button() == Qt.MouseButton.RightButton:
+                    idx = self.image_labels.index(label)
+                    self.images_layout.takeAt(idx)
+                    self.images.pop(idx)
+                    self.image_labels.pop(idx)
+                    label.deleteLater()
+                return False
+        return False
+
+    def eventFilter(self, watched, event):
+        if watched == self.text_edit:
+            return self.handel_text_edit_event(event)
+        elif watched == self.image_btn:
+            return self.handel_images_btn_event(event)
+        elif watched in self.image_labels:
+            return self.handel_image_label_event(watched, event)
         return False
 
 
@@ -113,7 +210,7 @@ class TextBubble(TransparentWindow):
         layout.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)
 
         self.loading = False
-        
+
         self.concated_text = ""
         self.msg_id = None
 
@@ -147,13 +244,13 @@ class TextBubble(TransparentWindow):
 
         self.show()
         self.hide_timer.start(5000)
-        
+
     def stop_loading(self):
         self.loading = False
 
         if self.hide_timer.isActive():
             return
-        
+
         self.hide()
 
     def on_finish_show(self):
@@ -175,8 +272,10 @@ class Plugin(BasePlugin):
         self.event_filter.released.connect(self.mouse_release)
 
         self.input_bubble = InputBubble()
-        self.input_bubble.text_submitted.connect(
-            lambda text: self.trigger_event(UserInputEvent(text))
+        self.input_bubble.input_submitted.connect(
+            lambda text, imgs: self.trigger_event(
+                UserInputEvent(text=text, images=imgs)
+            )
         )
 
         self.text_bubble = TextBubble()

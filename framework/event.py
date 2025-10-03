@@ -1,7 +1,7 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, ClassVar, Self, Never, Callable, Sequence
+from typing import ClassVar, Self, Never, Callable, Sequence
 import asyncio
 from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_core.tools import BaseTool
@@ -26,12 +26,6 @@ class InvokeStartEvent(Event):
 class InvokeEndEvent(Event):
     input_msgs: list[BaseMessage]
     new_msgs: list[BaseMessage]
-
-
-@dataclass
-class PluginFieldEvent(Event):
-    key: str
-    value: Any
 
 
 @dataclass

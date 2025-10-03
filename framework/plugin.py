@@ -4,7 +4,7 @@ import importlib.util
 import json
 import pathlib
 from langchain_core.tools import tool, BaseTool
-from typing import Any, ClassVar, Self, Sequence
+from typing import Any, ClassVar, Literal, Self, Sequence
 import sys
 import inspect
 import yaml
@@ -140,6 +140,8 @@ class BasePlugin:
 
 
 class Tool:
+    response_format: ClassVar[Literal["content", "content_and_artifact"]] = "content"
+
     def __init__(self, plugin: BasePlugin):
         self.plugin = plugin
 
@@ -147,7 +149,10 @@ class Tool:
         pass
 
     def langchain_wrap(self):
-        return tool(self.__class__.__name__)(self.invoke)
+        return tool(
+            self.__class__.__name__,
+            response_format=self.response_format,
+        )(self.invoke)
 
 
 class PluginManager:

@@ -1,17 +1,18 @@
+import base64
+from dataclasses import dataclass
+from io import BytesIO
 import sys
 from typing import cast
 import webbrowser
 from framework.plugin import BasePlugin, Tool
 from framework.config import BaseConfig
-import pythoncom
-import win32com.client as wcomcli
-from win32comext.shell import shell, shellcon
-from PySide6.QtWidgets import QApplication
 import pathlib
 import pywinauto
 from pywinauto import WindowSpecification
 from pywinauto.base_wrapper import BaseWrapper
 from pywinauto.win32structures import RECT
+from PIL import ImageGrab
+from langchain_core.messages import HumanMessage
 
 
 def control_structure(window: WindowSpecification | BaseWrapper, depth=None):
@@ -47,7 +48,7 @@ def control_structure(window: WindowSpecification | BaseWrapper, depth=None):
         d = {}
 
         d["class_name"] = ctrl.friendly_class_name()
-        
+
         ctrl_text: str = ctrl.window_text()
         ctrl_text = ctrl_text.replace("\n", r"\n").replace("\r", r"\r")
         d["text"] = ctrl_text
@@ -77,9 +78,9 @@ def control_structure(window: WindowSpecification | BaseWrapper, depth=None):
     return get_structure(window, 0)
 
 
-class CaptureDesktop(Tool):
+class ReadDesktop(Tool):
     def invoke(self):
-        """Obtain the user's desktop content list"""
+        """Get structured data of items on the user's desktop"""
 
         return {
             "path": pathlib.Path("~/Desktop").expanduser(),
@@ -101,8 +102,36 @@ class OpenBrowser(Tool):
         return "success"
 
 
+class ScreenShot(Tool):
+    response_format = "content_and_artifact"
+
+    def invoke(self):
+        """Get a screenshot of user's device"""
+        screenshot = ImageGrab.grab().convert("RGB")
+
+        buffer = BytesIO()
+
+        screenshot.save(buffer, format="JPEG", quality=85)
+
+        img_bytes = buffer.getvalue()
+        base64_string = base64.b64encode(img_bytes).decode("utf-8")
+
+        return "success", HumanMessage(
+            [
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{base64_string}",
+                    },
+                }
+            ]
+        )
+
+
+@dataclass
 class Config(BaseConfig):
-    desktop_access: bool = True
+    desktop_access: bool = False
+    enable_screenshot: bool = False
 
 
 class Plugin(BasePlugin):
@@ -121,5 +150,7 @@ class Plugin(BasePlugin):
         l = [OpenBrowser]
         config = cast(Config, self.get_config())
         if config.desktop_access:
-            l.append(CaptureDesktop)
+            l.append(ReadDesktop)
+        if config.enable_screenshot:
+            l.append(ScreenShot)
         return l
