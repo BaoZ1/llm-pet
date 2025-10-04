@@ -52,12 +52,16 @@ class ModifyPetStateEvent(Event):
     state_name: str
     delta: int
 
+
 class Plugin(BasePlugin):
     def init(self):
         self.state = PetState(mood=50, health=98, hunger=90)
 
     def prompts(self):
-        return {"marker": self.root_dir() / "mood_marker.md"}
+        return {
+            "marker": self.root_dir() / "mood_marker.md",
+            "extra_rule": self.root_dir() / "tone_rule.md",
+        }
 
     def infos(self):
         return {

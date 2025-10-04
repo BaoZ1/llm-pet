@@ -36,12 +36,12 @@ class DragEvent(Event):
 
 class DragStartEvent(DragEvent):
     def agent_msg(self):
-        return EventMessage("You are being dragged up by the user!")
+        return EventMessage("You got picked up!")
 
 
 class DragEndEvent(DragEvent):
     def agent_msg(self):
-        return EventMessage("You are put down by the user!")
+        return EventMessage("You’ve been put down.")
 
 
 class DragTask(Task):
@@ -55,7 +55,7 @@ class DragTask(Task):
             await asyncio.sleep(self.check_interval)
 
     def execute_info(self):
-        return "You are being dragged by the user"
+        return "You are being dragged..."
 
     def on_event(self, event):
         if isinstance(event, DragEndEvent):

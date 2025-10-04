@@ -506,11 +506,11 @@ class TestTray(QWidget):
         quit_action.triggered.connect(QApplication.quit)
         menu.addAction(quit_action)
 
-        restart_action = QAction("Restart", self)
-        restart_action.triggered.connect(self.tray_icon.hide)
-        restart_action.triggered.connect(
-            lambda: os.execl(sys.executable, sys.executable, *sys.argv)
-        )
-        menu.addAction(restart_action)
+        # restart_action = QAction("Restart", self)
+        # restart_action.triggered.connect(self.tray_icon.hide)
+        # restart_action.triggered.connect(
+        #     lambda: os.execl(sys.executable, sys.executable, *sys.argv)
+        # )
+        # menu.addAction(restart_action)
 
         self.tray_icon.setContextMenu(menu)

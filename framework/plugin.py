@@ -38,19 +38,25 @@ class BasePlugin:
 
     @classmethod
     def load(cls):
-        reload = False
         if cls.instance is not None:
-            cls.unload()
-            reload = True
+            return cls.reload()
         cls.instance = cls()
         cls.instance.init()
         for dc in cls.deps:
             cls.instance.on_dep_load(cls.instance.dep(dc))
-        if reload:
-            cls.trigger_event(PluginReloadEvent(cls))
-            print(f"{cls.__module__} reloaded")
-        else:
-            print(f"{cls.__module__} loaded")
+        print(f"{cls.__module__} loaded")
+
+    @classmethod
+    def reload(cls):
+        if cls.instance is None:
+            return cls.load()
+        old_instance = cls.instance
+        cls.instance = cls()
+        cls.instance.handel_reload(old_instance)
+        cls.trigger_event(PluginReloadEvent(cls))
+        for dc in cls.deps:
+            cls.instance.on_dep_load(cls.instance.dep(dc))
+        print(f"{cls.__module__} reloaded")
 
     @classmethod
     def unload(cls):
@@ -111,6 +117,9 @@ class BasePlugin:
 
     def init(self):
         pass
+
+    def handel_reload(self, old: Self):
+        self.init()
 
     def clear(self):
         pass

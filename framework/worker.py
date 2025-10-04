@@ -1,6 +1,6 @@
 import asyncio
 import threading
-from typing import Callable, Coroutine, ClassVar
+from typing import Callable, ClassVar
 
 
 class ThreadedWorker:
@@ -11,12 +11,11 @@ class ThreadedWorker:
     def start(cls):
         if cls.thread:
             raise
-
+        
         cls.loop = asyncio.new_event_loop()
 
         def run():
             asyncio.set_event_loop(cls.loop)
-            cls._running = True
             cls.loop.run_forever()
 
         cls.thread = threading.Thread(target=run, daemon=True)

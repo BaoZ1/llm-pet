@@ -1,4 +1,3 @@
-from pathlib import Path
 from framework.plugin import BasePlugin, PluginManager
 from framework.worker import ThreadedWorker
 from framework.config import BaseConfig
@@ -11,7 +10,7 @@ from framework.event import (
 )
 
 from enum import Enum, auto
-from typing import TypedDict, Annotated, Sequence, cast
+from typing import ClassVar, TypedDict, Annotated, Sequence, cast
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import BaseTool
 from langchain_core.messages import (
@@ -44,23 +43,30 @@ class State(TypedDict):
     revision_data: list[BaseMessage]
 
 
-class UserMessage(HumanMessage):
+class TypedMessage(HumanMessage):
+    name: ClassVar[str]
+
     def __init__(self, content: str | list[dict]):
         if isinstance(content, str):
-            super().__init__(f"[User Input] {content}")
+            super().__init__(f"=====<{self.name}>=====\n{content}")
         else:
             for d in content:
                 if d["type"] == "text":
-                    d["text"] = f"[User Input] {d["text"]}"
+                    d["text"] = f"=====<{self.name}>=====\n{d["text"]}"
             super().__init__(content)
 
 
-class EventMessage(HumanMessage):
-    def __init__(self, content: str):
-        super().__init__(f"[Event] {content}")
+class UserMessage(TypedMessage):
+    name = "UserInput"
 
 
-class InfoMessage(HumanMessage):
+class EventMessage(TypedMessage):
+    name = "Event"
+
+
+class InfoMessage(TypedMessage):
+    name = "Info"
+
     def __init__(self):
         info_parts: list[str] = []
 
@@ -73,12 +79,11 @@ class InfoMessage(HumanMessage):
         info_msg = "\n\n".join(info_parts).strip()
         if len(info_msg) == 0:
             info_msg = "No Information now."
-        super().__init__(f"[Info] {info_msg}")
+        super().__init__(info_msg)
 
 
-class RevisionMessage(HumanMessage):
-    def __init__(self, content: str):
-        super().__init__(f"[Revision] 据此修改意见重新回复：\n{content}")
+class RevisionMessage(TypedMessage):
+    name = "Revision"
 
 
 @dataclass
@@ -152,7 +157,7 @@ class StreamMarkerParser:
                     self.in_marker_process(c)
                 case self.State.in_end:
                     self.in_end_process(c)
-        ret = self.buffer
+        ret = self.buffer.strip()
         self.buffer = ""
         return ret
 
@@ -218,9 +223,25 @@ class Agent:
         self.model = self.base_model.bind_tools(tools)
 
         self.decide_model_prompt = SystemMessage(system_prompt)
+        self.revision_prompt = SystemMessage(
+            f"""请仔细分析所给的对话上下文和AI助手的回复（均进行了适当简化），从多个维度进行评估。
+        评估内容包括但不限于：
+        - 是否提及了相关行为而未调用对应工具？
+        - 是否包含了复杂格式，而不是一段足够简洁的文字？
+        - 是否脱离了其提示词中的行为规范？
+        
+        若回复内容恰当，直接返回`true`，若存在问题，返回具体的修改意见。
+        
+        AI助手提示词如下：
+        {system_prompt}
+        """
+        )
         self.graph = self.create_graph(tools)
 
-        self.task = ThreadedWorker.loop.create_task(self.run())
+        def create_task():
+            self.task = ThreadedWorker.loop.create_task(self.run())
+
+        ThreadedWorker.loop.call_soon_threadsafe(create_task)
 
     def stop(self):
         if self.task is not None:
@@ -271,7 +292,7 @@ class Agent:
             msg = await self.model.ainvoke(input_msgs)
         except Exception as e:
             print(e)
-            # print(state["new_messages"])
+            print(input_msgs)
 
         print(f"[invoke] {msg}\n")
 
@@ -287,15 +308,7 @@ class Agent:
                 },
             )
 
-        prompt = """请仔细分析所给的对话上下文和AI助手的回复（均进行了适当简化），从多个维度进行评估。
-        评估内容包括但不限于：
-        - 是否提及了相关行为而未调用特定工具？
-        - 是否包含了复杂格式，而不是一段足够简洁的文字？
-        - 是否缺少恰当的行为标记用于丰富输出效果？
-        
-        若回复内容恰当，直接返回`true`，若存在问题，返回具体的修改意见。
-        """
-        input_msgs = [SystemMessage(prompt)]
+        input_msgs = [self.revision_prompt]
         msgs = []
         for msg in self.concat_msgs(
             state["input_messages"] + state["new_messages"] + [state["response"]]
@@ -359,9 +372,10 @@ class Agent:
                 return {"new_messages": [msg.artifact]}
 
     async def postprocess(self, state: State):
-        new_presistent_messages = [
-            msg for msg in state["input_messages"] if isinstance(msg, UserMessage)
-        ] + state["new_messages"]
+        # new_presistent_messages = [
+        #     msg for msg in state["input_messages"] if isinstance(msg, UserMessage)
+        # ] + state["new_messages"]
+        new_presistent_messages = state["input_messages"] + state["new_messages"]
 
         TaskManager.trigger_event(
             InvokeEndEvent(
@@ -427,16 +441,6 @@ class Agent:
             while True:
                 while self.message_queue.empty():
                     await asyncio.sleep(0.5)
-
-                # last_state = self.state
-                # async for (mode, data) in self.graph.astream(self.state, stream_mode=["messages", "values"]):
-                #     if mode == "messages":
-                #         print(data)
-                #     elif mode == "values":
-                #         last_state = data
-                #     else:
-                #         raise Exception(mode)
-                # self.state = last_state
                 self.state = await self.graph.ainvoke(self.state, stream_mode="values")
         except asyncio.CancelledError:
             pass
@@ -467,7 +471,7 @@ class Plugin(BasePlugin):
             ),
             config.enable_revision,
         )
-        
+
     def clear(self):
         self.agent.stop()
 
@@ -482,4 +486,9 @@ class Plugin(BasePlugin):
 
         match e:
             case PluginRefreshEvent(prompt, tools):
+                open(
+                    self.root_dir() / "test_last_prompt.md",
+                    "w",
+                    encoding="utf-8",
+                ).write(prompt)
                 self.agent.start(prompt, tools)

@@ -4,7 +4,6 @@ from typing import (
     _TypedDict,
     Annotated,
     ClassVar,
-    TypedDict,
     cast,
     get_args,
     get_origin,
@@ -12,7 +11,7 @@ from typing import (
 )
 import yaml
 from pathlib import Path
-from dataclasses import dataclass, fields, field, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from PySide6.QtCore import Qt, Signal, SignalInstance
 from PySide6.QtWidgets import (
     QWidget,
@@ -23,11 +22,11 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QSpinBox,
+    QDoubleSpinBox,
     QPushButton,
     QSizePolicy,
     QFileDialog,
 )
-from langchain_openai import ChatOpenAI
 
 
 yaml.add_multi_representer(
@@ -62,23 +61,23 @@ class TypeFieldEdit[T]:
                 return
 
     @staticmethod
+    def idx_type(t: type):
+        t = get_origin(t) or t
+        if is_typeddict(t):
+            return _TypedDict
+        elif is_dataclass(t):
+            return DataclassType
+        elif issubclass(t, Path):
+            return Path
+        else:
+            return t
+
+    @staticmethod
     def create[E](t: type[E]) -> TypeFieldEdit[E]:
         comment, extra_args = "", ()
         if get_origin(t) is Annotated:
             t, comment, *extra_args = get_args(t)
-        idx_t = get_origin(t) or t
-        if idx_t not in TypeFieldEdit.edits:
-            if is_typeddict(idx_t):
-                return TypeFieldEdit.edits[_TypedDict]().with_type(
-                    t, comment, extra_args
-                )
-            elif is_dataclass(idx_t):
-                return TypeFieldEdit.edits[DataclassType]().with_type(
-                    t, comment, extra_args
-                )
-            elif issubclass(idx_t, Path):
-                return TypeFieldEdit.edits[Path]().with_type(t, comment, extra_args)
-            raise Exception(t)
+        idx_t = TypeFieldEdit.idx_type(t)
         return TypeFieldEdit.edits[idx_t]().with_type(t, comment, extra_args)
 
     def with_type(self, t: type[T], comment: str, extra_args: tuple):
@@ -129,6 +128,21 @@ class StrFieldEdit(QLineEdit, TypeFieldEdit[str]):
 
 
 class IntFieldEdit(QSpinBox, TypeFieldEdit[int]):
+    changed = Signal()
+
+    def init(self):
+        self.valueChanged.connect(lambda _: self.changed.emit())
+        if self.extra_args:
+            self.setRange(*self.extra_args)
+
+    def set_value(self, value):
+        self.setValue(value)
+
+    def get_value(self):
+        return self.value()
+
+
+class FloatFieldEdit(QDoubleSpinBox, TypeFieldEdit[float]):
     changed = Signal()
 
     def init(self):
@@ -440,15 +454,14 @@ class UnionFieldEdit(QWidget, TypeFieldEdit[UnionType]):
     def init(self):
         self.field_types = get_args(self.t)
 
-        layout = QHBoxLayout()
-        layout.setSizeConstraint(QHBoxLayout.SizeConstraint.SetFixedSize)
+        layout = QVBoxLayout()
+        layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetFixedSize)
 
-        head_layout = QVBoxLayout()
+        head_layout = QHBoxLayout()
+        head_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
-        self.type_selector = QComboBox()
+        self.type_selector = QComboBox()  
         head_layout.addWidget(self.type_selector)
-
-        head_layout.addStretch()
 
         layout.addLayout(head_layout)
 
@@ -480,10 +493,10 @@ class UnionFieldEdit(QWidget, TypeFieldEdit[UnionType]):
 
     def set_value(self, value):
         origins = [get_origin(t) or t for t in self.field_types]
-        vt = type(value)
+        vt = TypeFieldEdit.idx_type(type(value))
         idx = origins.index(vt)
         self.type_selector.setCurrentIndex(idx)
-        self.editors[vt].set_value(value)
+        self.editors[self.field_types[idx]].set_value(value)
 
     def change_type_idx(self, idx):
         self.field_input.setCurrentIndex(idx)
